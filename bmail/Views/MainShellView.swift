@@ -64,7 +64,7 @@ struct MainShellView: View {
         .safeAreaInset(edge: .bottom, alignment: .trailing, spacing: 0) {
             ComposeFAB(showCompose: $showCompose)
                 .padding(.trailing, 20)
-                .padding(.bottom, 10)
+                .padding(.bottom, 72)
         }
         .sheet(isPresented: $showCompose) { ComposeView() }
         .tint(Theme.ink)

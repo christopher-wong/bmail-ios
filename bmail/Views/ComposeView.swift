@@ -164,15 +164,15 @@ struct ComposeView: View {
                 }
                 Button { showFilePicker = true } label: {
                     Image(systemName: "paperclip")
-                        .font(.body.weight(.medium))
+                        .font(.footnote.weight(.medium))
                         .foregroundStyle(Theme.ink)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .frame(minWidth: 44, minHeight: 44)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 9)
                         .overlay(
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 .stroke(Theme.hairline, lineWidth: 1)
                         )
+                        .frame(minHeight: 44)
                         .opacity(attaching ? 0.4 : 1)
                         .accessibilityHidden(true)
                 }
@@ -184,20 +184,20 @@ struct ComposeView: View {
                 Button { showDraftsPicker = true } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "tray.full")
-                            .font(.caption.weight(.medium))
+                            .font(.footnote.weight(.medium))
                         if draftsCount > 0 {
                             Text("\(draftsCount)")
-                                .font(.mono(.caption2, weight: .medium))
+                                .font(.mono(.footnote, weight: .medium))
                         }
                     }
                     .foregroundStyle(Theme.ink)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .frame(minHeight: 44)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
                     .overlay(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
                             .stroke(Theme.hairline, lineWidth: 1)
                     )
+                    .frame(minHeight: 44)
                     .accessibilityHidden(true)
                 }
                 .buttonStyle(.plain)
