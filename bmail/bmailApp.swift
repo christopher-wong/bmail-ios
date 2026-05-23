@@ -1,17 +1,15 @@
-//
-//  bmailApp.swift
-//  bmail
-//
-//  Created by Christopher Wong on 5/23/26.
-//
-
 import SwiftUI
 
 @main
 struct bmailApp: App {
+    @State private var model = AppModel()
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
+                .environment(model)
+                .preferredColorScheme(.light)
+                .tint(Theme.ink)
         }
     }
 }
