@@ -70,12 +70,6 @@ struct MessageRow: Decodable, Identifiable, Sendable {
     let labels: [String]
 }
 
-struct ThreadResp: Decodable, Sendable {
-    let id: String
-    let participants: [String]
-    let messages: [MessageRow]
-}
-
 // MARK: - Drafts
 
 struct DraftRow: Codable, Identifiable, Hashable, Sendable {

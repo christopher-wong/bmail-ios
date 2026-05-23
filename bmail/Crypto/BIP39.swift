@@ -10,19 +10,24 @@ enum BIP39 {
         case invalidLength
         case unknownWord(String)
         case checksumMismatch
+        case rngFailed(OSStatus)
 
         var errorDescription: String? {
             switch self {
             case .invalidLength: return "recovery phrase must be 12 words"
             case .unknownWord(let w): return "“\(w)” is not in the BIP39 wordlist"
             case .checksumMismatch: return "recovery phrase checksum doesn't match"
+            case .rngFailed(let s): return "secure RNG failed (OSStatus \(s))"
             }
         }
     }
 
-    static func newMnemonic() -> String {
+    static func newMnemonic() throws -> String {
         var entropy = Data(count: 16)
-        _ = entropy.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 16, $0.baseAddress!) }
+        let status = entropy.withUnsafeMutableBytes {
+            SecRandomCopyBytes(kSecRandomDefault, 16, $0.baseAddress!)
+        }
+        guard status == errSecSuccess else { throw Error.rngFailed(status) }
         return mnemonic(fromEntropy: entropy)
     }
 
@@ -61,9 +66,11 @@ enum BIP39 {
     }
 
     static func entropy(fromMnemonic phrase: String) throws -> Data {
+        // Use the POSIX locale: BIP-39 words are ASCII and `.lowercased()` is
+        // locale-sensitive (e.g. in tr_TR, "I" → "ı" which isn't in the wordlist).
         let words = phrase
             .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
+            .lowercased(with: Locale(identifier: "en_US_POSIX"))
             .split(whereSeparator: { $0.isWhitespace })
             .map(String.init)
         guard words.count == 12 else { throw Error.invalidLength }

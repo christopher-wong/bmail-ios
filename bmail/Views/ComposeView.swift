@@ -89,6 +89,8 @@ struct ComposeView: View {
         .onChange(of: subject) { _, _ in scheduleAutosave() }
         .onChange(of: bodyText) { _, _ in scheduleAutosave() }
         .onChange(of: to) { _, _ in scheduleAutosave() }
+        .onChange(of: cc) { _, _ in scheduleAutosave() }
+        .onChange(of: bcc) { _, _ in scheduleAutosave() }
         .fileImporter(
             isPresented: $showFilePicker,
             allowedContentTypes: [.item],
@@ -376,10 +378,22 @@ struct ComposeView: View {
         }
     }
 
+    /// Reject attachments above this size — loading the bytes into memory is
+    /// the current upload path (no streaming), so anything much larger risks
+    /// jetsam. Bumping this limit requires a streaming upload rewrite.
+    private static let maxAttachmentBytes: Int64 = 25 * 1024 * 1024  // 25 MiB
+
     private func uploadOne(_ url: URL) async {
         let needsScope = url.startAccessingSecurityScopedResource()
         defer { if needsScope { url.stopAccessingSecurityScopedResource() } }
         do {
+            // Size-check before reading the whole file into memory.
+            let resourceValues = try url.resourceValues(forKeys: [.fileSizeKey])
+            if let fileSize = resourceValues.fileSize, Int64(fileSize) > Self.maxAttachmentBytes {
+                let mb = Double(Self.maxAttachmentBytes) / 1_048_576
+                sendError = String(format: "attachment too large (max %.0f MB)", mb)
+                return
+            }
             let bytes = try Data(contentsOf: url)
             let filename = url.lastPathComponent
             let mime = (UTType(filenameExtension: url.pathExtension)?.preferredMIMEType) ?? "application/octet-stream"

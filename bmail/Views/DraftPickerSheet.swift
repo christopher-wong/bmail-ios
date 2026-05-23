@@ -41,10 +41,19 @@ struct DraftPickerSheet: View {
                             .contentShape(Rectangle())
                             .onTapGesture { onPick(d) }
                             .listRowInsets(EdgeInsets())
-                            .listRowSeparator(.hidden)
+                            .listRowSeparator(.visible, edges: .bottom)
+                            .listRowSeparatorTint(Theme.hairline)
+                            .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                             .listRowBackground(Color.clear)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) {
+                                    discardOne(d)
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .tint(.red)
+                            }
                         }
-                        .onDelete(perform: discard)
                     }
                     .listStyle(.plain)
                     .scrollContentBackground(.hidden)
@@ -79,13 +88,11 @@ struct DraftPickerSheet: View {
         subjects = out
     }
 
-    private func discard(at offsets: IndexSet) {
-        let ids = offsets.map { drafts[$0].id }
-        drafts.remove(atOffsets: offsets)
+    private func discardOne(_ d: DraftRow) {
+        let id = d.id
+        drafts.removeAll { $0.id == id }
         Task {
-            for id in ids {
-                _ = try? await APIClient.shared.delete("/api/drafts/\(id)")
-            }
+            _ = try? await APIClient.shared.delete("/api/drafts/\(id)")
         }
     }
 }
@@ -128,6 +135,5 @@ private struct DraftPickerRow: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(alignment: .bottom) { Hairline() }
     }
 }

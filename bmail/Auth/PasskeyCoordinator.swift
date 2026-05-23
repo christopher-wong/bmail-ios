@@ -12,6 +12,8 @@ final class PasskeyCoordinator: NSObject {
         case prfUnavailable
         case missingPRFOutput
         case unexpectedCredentialType
+        case alreadyInFlight
+        case noPresentationAnchor
         case underlying(Error)
 
         var errorDescription: String? {
@@ -20,6 +22,8 @@ final class PasskeyCoordinator: NSObject {
             case .prfUnavailable: return "this device does not support the WebAuthn PRF extension"
             case .missingPRFOutput: return "passkey returned no PRF output"
             case .unexpectedCredentialType: return "unexpected credential type"
+            case .alreadyInFlight: return "another passkey ceremony is already running"
+            case .noPresentationAnchor: return "no UI window scene available for the passkey sheet"
             case .underlying(let e): return e.localizedDescription
             }
         }
@@ -106,7 +110,13 @@ final class PasskeyCoordinator: NSObject {
     // MARK: - ASAuthorizationController bridge
 
     private func perform(request: ASAuthorizationRequest) async throws -> ASAuthorization {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<ASAuthorization, Error>) in
+        // Refuse re-entry: if a ceremony is already pending, we'd clobber the
+        // first continuation (leaks the awaiter) and feed the wrong credential
+        // to whichever caller wins the delegate callback.
+        guard continuation == nil, controller == nil else {
+            throw Failure.alreadyInFlight
+        }
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<ASAuthorization, Error>) in
             self.continuation = cont
             let ctrl = ASAuthorizationController(authorizationRequests: [request])
             ctrl.delegate = self
@@ -115,14 +125,22 @@ final class PasskeyCoordinator: NSObject {
             ctrl.performRequests()
         }
     }
+
+    /// Take ownership of the pending continuation atomically on the main actor.
+    /// Returns nil if nothing is in flight (delegate fired twice, or after
+    /// cancellation), so the second resume is a no-op instead of a crash.
+    private func takeContinuation() -> CheckedContinuation<ASAuthorization, Error>? {
+        let cont = self.continuation
+        self.continuation = nil
+        self.controller = nil
+        return cont
+    }
 }
 
 extension PasskeyCoordinator: ASAuthorizationControllerDelegate {
     nonisolated func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
         Task { @MainActor in
-            self.continuation?.resume(returning: authorization)
-            self.continuation = nil
-            self.controller = nil
+            self.takeContinuation()?.resume(returning: authorization)
         }
     }
 
@@ -134,9 +152,7 @@ extension PasskeyCoordinator: ASAuthorizationControllerDelegate {
             } else {
                 mapped = Failure.underlying(error)
             }
-            self.continuation?.resume(throwing: mapped)
-            self.continuation = nil
-            self.controller = nil
+            self.takeContinuation()?.resume(throwing: mapped)
         }
     }
 }
@@ -146,9 +162,11 @@ private final class PresentationAnchor: NSObject, ASAuthorizationControllerPrese
     func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         if let win = scenes.flatMap(\.windows).first(where: \.isKeyWindow) { return win }
-        // No key window yet — pick any window scene and make a transient anchor.
-        // In practice this never fires (the system shows the sheet on top of
-        // whatever window owns the active scene by the time this is called).
-        return UIWindow(windowScene: scenes.first ?? UIApplication.shared.connectedScenes.first as! UIWindowScene)
+        if let scene = scenes.first {
+            return UIWindow(windowScene: scene)
+        }
+        // No UIWindowScene at all — return an empty UIWindow rather than
+        // crash. The system will surface a presentation error to the delegate.
+        return UIWindow()
     }
 }

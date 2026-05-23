@@ -76,16 +76,26 @@ final class RealtimeClient {
         self.receiveLoopID = loopID
         t.resume()
         lastPongAt = .now
-        isConnected = true
-        reconnectAttempt = 0
+        // Don't flip isConnected / reset backoff yet: the upgrade hasn't been
+        // proven; an immediate close would otherwise both lie about
+        // connectivity and erase the backoff counter, producing a hot
+        // reconnect loop on a server that always rejects.
         startHeartbeat()
         Task { await self.receiveLoop(loopID: loopID, task: t) }
     }
 
     private func receiveLoop(loopID: UUID, task: URLSessionWebSocketTask) async {
+        var sawFirstFrame = false
         while !stopped, self.receiveLoopID == loopID {
             do {
                 let msg = try await task.receive()
+                if !sawFirstFrame {
+                    // First successful receive = upgrade really worked. Now
+                    // it's safe to mark connected and clear the backoff.
+                    sawFirstFrame = true
+                    self.isConnected = true
+                    self.reconnectAttempt = 0
+                }
                 switch msg {
                 case .string(let s):
                     self.lastPongAt = .now

@@ -69,7 +69,7 @@ final class AuthService {
               let sealedProof = Data(b64u: begin.sealed_proof_b64) else {
             throw APIError.other("server returned unexpected recovery payload")
         }
-        let (wrapKey, _) = try Argon2.deriveWrapKey(entropy: entropy, params: .existing(params))
+        let (wrapKey, _) = try await Argon2.deriveWrapKey(entropy: entropy, params: .existing(params))
         let priv = try Crypto.unwrapPrivKey(wrapped, with: wrapKey)
         let proof = try Crypto.openSealedBox(sealedProof, priv: priv)
 
@@ -120,13 +120,18 @@ final class AuthService {
         let (passkeyWrapped, passkeyWrapSalt) = try Crypto.wrapPrivKey(priv, with: passkeyWrapKey)
 
         // Wrap #2: recovery wrap (Argon2id(BIP39 entropy) → AES-GCM)
-        let phrase = BIP39.newMnemonic()
+        let phrase = try BIP39.newMnemonic()
         let entropy = try BIP39.entropy(fromMnemonic: phrase)
-        let (recoveryWrapKey, recoveryParams) = try Argon2.deriveWrapKey(entropy: entropy, params: .new)
+        let (recoveryWrapKey, recoveryParams) = try await Argon2.deriveWrapKey(entropy: entropy, params: .new)
         let (recoveryWrapped, _) = try Crypto.wrapPrivKey(priv, with: recoveryWrapKey)
-        let kdfJSON = String(
+        // Argon2.Params is all-ASCII (algorithm/version/integers/base64u salt),
+        // so encoded JSON is always valid UTF-8 — but bail loudly rather than
+        // upload `kdf_params: null` and brick recovery for this account.
+        guard let kdfJSON = String(
             data: try JSONEncoder().encode(recoveryParams), encoding: .utf8
-        )
+        ) else {
+            throw APIError.other("recovery params not encodable as UTF-8")
+        }
 
         let attestation = AttestationPayload(
             credential_id_b64: reg.credentialID.b64u,

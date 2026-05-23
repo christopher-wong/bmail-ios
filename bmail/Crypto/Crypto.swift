@@ -9,12 +9,14 @@ enum Crypto {
     enum Error: Swift.Error, LocalizedError {
         case badCiphertext
         case decryptFailed
+        case rngFailed(OSStatus)
         case other(String)
 
         var errorDescription: String? {
             switch self {
             case .badCiphertext: return "ciphertext too short"
             case .decryptFailed: return "decryption failed"
+            case .rngFailed(let s): return "secure RNG failed (OSStatus \(s))"
             case .other(let m): return m
             }
         }
@@ -26,6 +28,13 @@ enum Crypto {
     // MARK: - PRF → AES-GCM wrap key
 
     /// HKDF-SHA256(prfOutput, info="cfemail/wrap-key/v1") → 32-byte AES-GCM key.
+    ///
+    /// TODO(interop): the sibling web client (web/src/lib/crypto.ts) may pass
+    /// the per-credential `wrap_salt_b64` as the HKDF salt. If so, this
+    /// function needs `salt: Data` and a `wraps` model version bump so older
+    /// (salt-less) blobs keep round-tripping. Until that is verified against
+    /// the web client, iOS-enrolled and iOS-only accounts unwrap correctly,
+    /// but a passkey enrolled on web may not round-trip here. See review.
     static func deriveWrapKey(prfOutput: Data) -> SymmetricKey {
         let ikm = SymmetricKey(data: prfOutput)
         return HKDF<SHA256>.deriveKey(
@@ -39,7 +48,10 @@ enum Crypto {
     /// Returns (wrappedBlob, 16B random salt) — salt is stored alongside.
     static func wrapPrivKey(_ priv: Data, with wrapKey: SymmetricKey) throws -> (wrapped: Data, salt: Data) {
         var iv = Data(count: 12)
-        _ = iv.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 12, $0.baseAddress!) }
+        let ivStatus = iv.withUnsafeMutableBytes {
+            SecRandomCopyBytes(kSecRandomDefault, 12, $0.baseAddress!)
+        }
+        guard ivStatus == errSecSuccess else { throw Error.rngFailed(ivStatus) }
         let nonce = try AES.GCM.Nonce(data: iv)
         let sealed = try AES.GCM.seal(priv, using: wrapKey, nonce: nonce)
         var blob = Data()
@@ -48,7 +60,10 @@ enum Crypto {
         blob.append(sealed.tag)
 
         var salt = Data(count: 16)
-        _ = salt.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 16, $0.baseAddress!) }
+        let saltStatus = salt.withUnsafeMutableBytes {
+            SecRandomCopyBytes(kSecRandomDefault, 16, $0.baseAddress!)
+        }
+        guard saltStatus == errSecSuccess else { throw Error.rngFailed(saltStatus) }
         return (blob, salt)
     }
 

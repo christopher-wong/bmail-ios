@@ -25,6 +25,10 @@ struct EnrollView: View {
             }
         }
         .background(Theme.inverseInk)
+        // Block swipe-to-dismiss once we're showing the recovery phrase —
+        // the phrase is generated exactly once and would be unrecoverable
+        // if the sheet closed before the user copied/wrote it down.
+        .interactiveDismissDisabled(recoveryPhrase != nil)
     }
 
     // MARK: - Step 1: invite + passkey
@@ -146,7 +150,17 @@ struct EnrollView: View {
                     HStack {
                         Spacer()
                         Button(copied ? "COPIED ✓" : "COPY") {
-                            UIPasteboard.general.string = phrase
+                            // Auto-expire the pasteboard entry and keep it on
+                            // this device — the recovery phrase is the master
+                            // mailbox secret; we don't want it on the system
+                            // pasteboard indefinitely or synced to other Macs.
+                            UIPasteboard.general.setItems(
+                                [[UIPasteboard.typeAutomatic: phrase]],
+                                options: [
+                                    .expirationDate: Date().addingTimeInterval(60),
+                                    .localOnly: true,
+                                ]
+                            )
                             copied = true
                             Task {
                                 try? await Task.sleep(for: .seconds(2))
