@@ -22,10 +22,35 @@ final class AppModel {
     var primaryDomain: String?
     var addAddresses: [String] = []
 
+    /// Public server config — populated once at launch and after login.
+    /// Unauthenticated, safe to refresh from `.unauthenticated`.
+    var publicConfig: PublicConfig?
+
     private let auth: AuthService
 
     init() {
         self.auth = AuthService()
+    }
+
+    private static func privKey(for userID: String) -> String { "priv:\(userID)" }
+    private static let biometryDefaultsKey = "biometryLockEnabled"
+
+    var biometryLockEnabled: Bool {
+        UserDefaults.standard.bool(forKey: Self.biometryDefaultsKey)
+    }
+
+    var biometryAvailable: Bool { Keychain.biometryAvailable }
+    var biometryLabel: String { Keychain.biometryLabel }
+
+    /// Toggle the biometric gate on the cached priv. Returns true if the
+    /// Keychain item was re-stored successfully, false if `priv` isn't
+    /// loaded yet (caller is logged out).
+    @discardableResult
+    func setBiometryLock(enabled: Bool) -> Bool {
+        guard let me, let priv else { return false }
+        UserDefaults.standard.set(enabled, forKey: Self.biometryDefaultsKey)
+        Keychain.set(priv, for: Self.privKey(for: me.id), requireBiometry: enabled)
+        return true
     }
 
     var pub: Data? {
@@ -36,15 +61,34 @@ final class AppModel {
     // MARK: - Lifecycle
 
     func bootstrap() async {
+        // Best-effort GC for stale per-draft hosted state files. Fire-and-forget;
+        // we don't await so it can't delay the auth check.
+        Task.detached(priority: .background) { DraftStateStore.default.gcStale() }
+
+        // Server config is unauthenticated — fetch it concurrently with the
+        // session probe so launch isn't serialized on two round-trips.
+        async let cfg: PublicConfig? = (try? APIClient.shared.publicConfig())
         do {
             let me = try await auth.currentMe()
-            // We had a live session cookie — but no priv. Force a fresh
-            // passkey assert so we can recover the priv key. Until then,
-            // keep the session but stay on login.
             self.me = me
-            self.phase = .unauthenticated
+            let key = Self.privKey(for: me.id)
+            // Read off the main actor — if the item is biometry-gated this
+            // will block the calling thread on the Face ID / Touch ID prompt.
+            let cached = await Task.detached { Keychain.get(key) }.value
+            if let cached {
+                self.priv = cached
+                self.phase = .authenticated
+                RealtimeClient.shared.start()
+            } else {
+                self.phase = .unauthenticated
+            }
         } catch {
             self.phase = .unauthenticated
+        }
+        if let cfg = await cfg {
+            self.publicConfig = cfg
+            self.primaryDomain = cfg.primary_domain
+            self.addAddresses = cfg.additional_domains
         }
     }
 
@@ -54,6 +98,7 @@ final class AppModel {
             let s = try await auth.loginWithPasskey()
             self.me = s.me
             self.priv = s.priv
+            Keychain.set(s.priv, for: Self.privKey(for: s.me.id), requireBiometry: biometryLockEnabled)
             self.phase = .authenticated
             RealtimeClient.shared.start()
         } catch {
@@ -67,6 +112,7 @@ final class AppModel {
             let s = try await auth.loginWithRecovery(handle: handle, phrase: phrase)
             self.me = s.me
             self.priv = s.priv
+            Keychain.set(s.priv, for: Self.privKey(for: s.me.id), requireBiometry: biometryLockEnabled)
             self.phase = .authenticated
             RealtimeClient.shared.start()
         } catch {
@@ -94,6 +140,9 @@ final class AppModel {
     }
 
     func finishEnrollment() {
+        if let me, let priv {
+            Keychain.set(priv, for: Self.privKey(for: me.id), requireBiometry: biometryLockEnabled)
+        }
         self.phase = .authenticated
         RealtimeClient.shared.start()
     }
@@ -134,6 +183,10 @@ final class AppModel {
 
     func logout() async {
         RealtimeClient.shared.stop()
+        if let me {
+            Keychain.delete(Self.privKey(for: me.id))
+        }
+        UserDefaults.standard.removeObject(forKey: Self.biometryDefaultsKey)
         await auth.logout()
         self.priv = nil
         self.me = nil

@@ -8,10 +8,6 @@ import CryptoKit
 final class AuthService {
     struct Session {
         let me: MeResp
-        /// 32-byte X25519 private key. Hold in memory only; persist to
-        /// Keychain only if the user opts in (not the default — losing the
-        /// device should not lose the mailbox key but losing the device +
-        /// passcode shouldn't unlock it either).
         let priv: Data
     }
 

@@ -1,4 +1,6 @@
 import Foundation
+import OpenAPIRuntime
+import OpenAPIURLSession
 
 enum APIError: Error, LocalizedError {
     case http(status: Int, message: String)
@@ -30,6 +32,11 @@ final class APIClient {
     let decoder: JSONDecoder
     let encoder: JSONEncoder
 
+    /// Generated typed client backed by the same cookie-carrying URLSession.
+    /// Use this for new operations; existing call sites continue using the
+    /// generic `get`/`post`/`patch`/`delete` helpers below.
+    let openAPI: Client
+
     private init() {
         let cfg = URLSessionConfiguration.default
         cfg.httpCookieStorage = .shared
@@ -37,9 +44,17 @@ final class APIClient {
         cfg.httpShouldSetCookies = true
         cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
         cfg.timeoutIntervalForRequest = 30
-        session = URLSession(configuration: cfg)
+        let urlSession = URLSession(configuration: cfg)
+        session = urlSession
         decoder = JSONDecoder()
         encoder = JSONEncoder()
+        // The generated Client uses the same URLSession so cookies are shared
+        // automatically — no separate cookie-jar management needed.
+        let transport = URLSessionTransport(configuration: .init(session: urlSession))
+        openAPI = Client(
+            serverURL: URL(string: "https://mail.middleseat.vc")!,
+            transport: transport
+        )
     }
 
     private func url(_ path: String) -> URL {

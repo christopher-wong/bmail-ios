@@ -19,40 +19,9 @@ struct AttachmentService {
         }
     }
 
-    // MARK: - Upload
-
-    /// Uploads raw bytes. The server stores them as-is. For outbound mail the
-    /// recipient eventually receives plaintext (server MIME-bundles before
-    /// SMTP delivery); for the sender's at-rest copy the filename is sealed
-    /// to the user's own pubkey so the DO row only holds ciphertext.
-    func upload(
-        bytes: Data,
-        mime: String,
-        filenameCT: String?,
-        draftID: String?
-    ) async throws -> AttachmentUploadResp {
-        var comps = URLComponents(url: api.baseURL.appendingPathComponent("/api/attachments"), resolvingAgainstBaseURL: false)!
-        var items: [URLQueryItem] = [URLQueryItem(name: "mime", value: mime)]
-        if let filenameCT { items.append(URLQueryItem(name: "filename_ct_b64", value: filenameCT)) }
-        if let draftID { items.append(URLQueryItem(name: "draft_id", value: draftID)) }
-        comps.queryItems = items
-
-        var req = URLRequest(url: comps.url!)
-        req.httpMethod = "POST"
-        req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        req.httpBody = bytes
-        req.setValue("application/json", forHTTPHeaderField: "Accept")
-
-        let (data, resp) = try await api.session.data(for: req)
-        guard let http = resp as? HTTPURLResponse else { throw Error.bad("non-HTTP response") }
-        guard (200..<300).contains(http.statusCode) else {
-            let msg: String
-            if let p = try? api.decoder.decode(APIErrorPayload.self, from: data), let e = p.error { msg = e }
-            else { msg = String(data: data, encoding: .utf8) ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode) }
-            throw Error.http(http.statusCode, msg)
-        }
-        return try api.decoder.decode(AttachmentUploadResp.self, from: data)
-    }
+    // Upload is now handled by Uploader.swift via the unified `uploads_*`
+    // pipeline (kind=.attach). The legacy POST /api/attachments endpoint was
+    // removed from the server spec.
 
     // MARK: - Per-message list
 

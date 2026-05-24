@@ -12,12 +12,7 @@ struct StatusResp: Decodable {
     let user_count: Int
 }
 
-struct PublicConfig: Decodable {
-    let primary_domain: String
-    let additional_domains: [String]
-    let app_host: String
-    let app_name: String
-}
+// PublicConfig is now an alias to Components.Schemas.PublicConfig (see ModelAliases.swift).
 
 // MARK: - Me
 
@@ -127,12 +122,8 @@ struct AttachmentRef: Encodable, Sendable {
 
 // MARK: - Attachments
 
-struct AttachmentUploadResp: Decodable, Sendable {
-    let id: String
-    let r2_key: String
-    let size_bytes: Int64
-    let mime: String
-}
+// AttachmentUploadResp was for the legacy POST /api/attachments endpoint.
+// Uploads now flow through Uploader.swift and return UploadResult.
 
 struct AttachmentRow: Decodable, Identifiable, Sendable {
     let id: String

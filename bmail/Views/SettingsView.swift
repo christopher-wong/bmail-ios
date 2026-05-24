@@ -7,6 +7,9 @@ struct SettingsView: View {
     @State private var passkeys: [PasskeyView] = []
     @State private var passkeysLoading = false
     @State private var removing: Set<String> = []
+    @State private var biometryLockOn: Bool = false
+    @State private var showHostedMine = false
+    @State private var showSecretMine = false
     @ScaledMetric(relativeTo: .footnote) private var labelColumn: CGFloat = 130
 
     var body: some View {
@@ -59,6 +62,52 @@ struct SettingsView: View {
                             .padding(.horizontal, 16)
                             .padding(.vertical, 12)
                         }
+                        if app.biometryAvailable {
+                            block(title: "SECURITY") {
+                                biometryRow
+                            }
+                        }
+                        block(title: "FILES") {
+                            Button {
+                                showHostedMine = true
+                            } label: {
+                                HStack {
+                                    Text("hosted attachments")
+                                        .font(.mono(13))
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption2.weight(.medium))
+                                        .foregroundStyle(Theme.mute)
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 12)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            Hairline()
+                            Button {
+                                showSecretMine = true
+                            } label: {
+                                HStack {
+                                    Text("secret links")
+                                        .font(.mono(13))
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption2.weight(.medium))
+                                        .foregroundStyle(Theme.mute)
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 12)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .navigationDestination(isPresented: $showHostedMine) {
+                            HostedMineView()
+                        }
+                        .navigationDestination(isPresented: $showSecretMine) {
+                            SecretMineView()
+                        }
                         block(title: "SESSION") {
                             Button {
                                 Task { await app.logout() }
@@ -73,8 +122,37 @@ struct SettingsView: View {
                 }
             }
             .background(Theme.inverseInk)
-            .task { await loadPasskeys() }
+            .task {
+                biometryLockOn = app.biometryLockEnabled
+                await loadPasskeys()
+            }
         }
+    }
+
+    private var biometryRow: some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("require \(app.biometryLabel.lowercased())")
+                    .font(.mono(13, .medium))
+                Text("unlock the app on launch")
+                    .font(.mono(10))
+                    .foregroundStyle(Theme.mute)
+            }
+            Spacer()
+            Toggle("", isOn: Binding(
+                get: { biometryLockOn },
+                set: { newValue in
+                    biometryLockOn = newValue
+                    if !app.setBiometryLock(enabled: newValue) {
+                        biometryLockOn = !newValue
+                    }
+                }
+            ))
+            .labelsHidden()
+            .tint(Theme.ink)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
     }
 
     private func passkeyRow(_ p: PasskeyView) -> some View {

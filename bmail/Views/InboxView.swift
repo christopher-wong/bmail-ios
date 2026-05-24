@@ -54,20 +54,31 @@ struct InboxView: View {
         } else if threads.isEmpty {
             EmptyStateView(title: "inbox is empty", hint: "emails routed to your address(es) will appear here.")
         } else {
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(threads) { t in
-                        ThreadRowView(
-                            thread: t,
-                            subject: subjects[t.id],
-                            ownAddresses: Set((app.me?.addresses ?? []).map { $0.lowercased() })
-                        )
-                        .contentShape(Rectangle())
-                        .onTapGesture { openThread = t }
-                        Hairline()
+            List {
+                ForEach(threads) { t in
+                    ThreadRowView(
+                        thread: t,
+                        subject: subjects[t.id],
+                        ownAddresses: Set((app.me?.addresses ?? []).map { $0.lowercased() })
+                    )
+                    .contentShape(Rectangle())
+                    .onTapGesture { openThread = t }
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Theme.inverseInk)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        Button(role: .destructive) {
+                            Task { await delete(t) }
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
                     }
+                    .overlay(alignment: .bottom) { Hairline() }
                 }
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(Theme.inverseInk)
         }
     }
 
@@ -82,6 +93,18 @@ struct InboxView: View {
         } catch {
             self.loadError = (error as? LocalizedError)?.errorDescription ?? "load failed"
             self.loading = false
+        }
+    }
+
+    private func delete(_ t: ThreadRow) async {
+        // Optimistic remove; realtime push will reconcile on other clients.
+        let prev = threads
+        threads.removeAll { $0.id == t.id }
+        do {
+            _ = try await APIClient.shared.deleteThread(id: t.id)
+        } catch {
+            threads = prev
+            loadError = (error as? LocalizedError)?.errorDescription ?? "delete failed"
         }
     }
 

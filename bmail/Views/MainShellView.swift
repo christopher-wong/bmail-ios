@@ -29,6 +29,12 @@ struct MainShellView: View {
     @State private var section: MailboxSection = .inbox
     @State private var showCompose = false
 
+    /// Pending hosted link forwarded from RootView's Universal Link / deep link handler.
+    @Binding var pendingHostedLink: HostedLinkTarget?
+
+    /// Pending secret link token forwarded from RootView.
+    @Binding var pendingSecretToken: String?
+
     /// Tab order — INBOX sits in the middle. Drafts is no longer a tab; it
     /// lives inside the compose sheet (tap COMPOSE → "DRAFTS" to resume).
     var visibleSections: [MailboxSection] {
@@ -67,6 +73,17 @@ struct MainShellView: View {
                 .padding(.bottom, 72)
         }
         .sheet(isPresented: $showCompose) { ComposeView() }
+        .sheet(item: $pendingHostedLink) { link in
+            HostedView(token: link.token, cek: link.cek)
+                .environment(app)
+        }
+        .sheet(item: Binding(
+            get: { pendingSecretToken.map { SecretLinkToken(token: $0) } },
+            set: { pendingSecretToken = $0?.token }
+        )) { target in
+            SecretLinkView(token: target.token)
+                .environment(app)
+        }
         .tint(Theme.ink)
         .gesture(swipeBetweenTabs)
     }

@@ -55,6 +55,17 @@ struct ThreadView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
+                Button {
+                    Task { await deleteThread() }
+                } label: {
+                    Text("DELETE")
+                        .font(.mono(.caption, weight: .medium))
+                        .tracking(1.0)
+                        .foregroundStyle(Theme.ink)
+                        .frame(minHeight: 44)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Delete thread")
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -75,6 +86,17 @@ struct ThreadView: View {
                                 onReply: { startReply(to: m) },
                                 onDownload: { att in await downloadAndShare(att, on: m) }
                             )
+                            .contextMenu {
+                                Button(m.starred ? "Unstar" : "Star") {
+                                    Task { await toggleStarred(m) }
+                                }
+                                Button(m.read ? "Mark as unread" : "Mark as read") {
+                                    Task { await toggleRead(m) }
+                                }
+                                Button("Delete message", role: .destructive) {
+                                    Task { await deleteMessage(m) }
+                                }
+                            }
                             Hairline()
                         }
                     }
@@ -183,6 +205,49 @@ struct ThreadView: View {
             }
         }
         self.attachmentsByMessage = out
+    }
+
+    private func deleteThread() async {
+        do {
+            _ = try await APIClient.shared.deleteThread(id: threadID)
+            dismiss()
+        } catch {
+            loadError = (error as? LocalizedError)?.errorDescription ?? "delete failed"
+        }
+    }
+
+    private func deleteMessage(_ m: MessageRow) async {
+        let prev = messages
+        messages.removeAll { $0.id == m.id }
+        if messages.isEmpty {
+            // Last message in the thread — dismiss and let realtime clear the row.
+            do {
+                try await APIClient.shared.deleteMessage(id: m.id)
+                dismiss()
+            } catch {
+                messages = prev
+                loadError = (error as? LocalizedError)?.errorDescription ?? "delete failed"
+            }
+            return
+        }
+        do {
+            try await APIClient.shared.deleteMessage(id: m.id)
+        } catch {
+            messages = prev
+            loadError = (error as? LocalizedError)?.errorDescription ?? "delete failed"
+        }
+    }
+
+    private func toggleStarred(_ m: MessageRow) async {
+        let next = !m.starred
+        do { try await APIClient.shared.patchMessage(id: m.id, starred: next) }
+        catch { loadError = (error as? LocalizedError)?.errorDescription ?? "patch failed" }
+    }
+
+    private func toggleRead(_ m: MessageRow) async {
+        let next = !m.read
+        do { try await APIClient.shared.patchMessage(id: m.id, read: next) }
+        catch { loadError = (error as? LocalizedError)?.errorDescription ?? "patch failed" }
     }
 
     private func downloadAndShare(_ att: DecodedAttachment, on _: MessageRow) async {
