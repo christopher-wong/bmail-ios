@@ -409,6 +409,18 @@ struct SecretLinkView: View {
             } else {
                 phase = .gate
             }
+        } catch let secretErr as SecretLinkError {
+            // 410 from GET signals a dead link. Use the structured state so
+            // we render the distinct anti-phishing screen rather than a
+            // generic "couldn't load" message.
+            switch secretErr {
+            case .selfDestructed: phase = .dead(.selfDestructed)
+            case .revoked:        phase = .dead(.revoked)
+            case .expired:        phase = .dead(.expired)
+            default:
+                loadError = secretErr.errorDescription ?? "\(secretErr)"
+                phase = .gate
+            }
         } catch {
             let msg = (error as? LocalizedError)?.errorDescription ?? "\(error)"
             if msg.contains("404") {

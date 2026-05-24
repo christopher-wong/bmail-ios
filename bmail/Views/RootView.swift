@@ -60,7 +60,9 @@ struct HostedLinkTarget: Identifiable {
     let token: String
     let cek: Data
 
-    /// Parse `https://mail.middleseat.vc/d/<token>#k=<base64url_cek>`
+    /// Parse `https://mail.middleseat.vc/d/<token>#k=<base64url_cek>`.
+    /// The fragment is treated as a query-string of `&`-separated `key=value`
+    /// pairs so additional, unknown params don't pollute the CEK.
     init?(universalLink url: URL) {
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let pathComponents = url.pathComponents  // ["", "d", "<token>"]
@@ -68,12 +70,24 @@ struct HostedLinkTarget: Identifiable {
               pathComponents[1] == "d" else { return nil }
         let token = pathComponents[2]
         guard let fragment = components?.fragment,
-              let kRange = fragment.range(of: "k=") else { return nil }
-        let cekB64u = String(fragment[kRange.upperBound...])
-        guard let cek = Data(b64u: cekB64u) else { return nil }
+              let cekB64u = Self.fragmentValue(named: "k", in: fragment),
+              let cek = Data(b64u: cekB64u) else { return nil }
         self.token = token
         self.cek = cek
         self.id = token
+    }
+
+    /// Extract a single `name=value` entry from a fragment string. Treats the
+    /// fragment as a query-style `&`-separated list. Returns `nil` when the
+    /// key is absent or its value is empty.
+    private static func fragmentValue(named key: String, in fragment: String) -> String? {
+        for pair in fragment.split(separator: "&", omittingEmptySubsequences: true) {
+            let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2, parts[0] == key else { continue }
+            let value = String(parts[1])
+            return value.isEmpty ? nil : value
+        }
+        return nil
     }
 
     /// Parse `bmail://hosted?token=<>&k=<base64url_cek>`

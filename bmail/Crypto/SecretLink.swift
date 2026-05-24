@@ -237,19 +237,29 @@ enum SecretLinkCrypto {
 
     // MARK: - Random helpers
 
-    static func randomCEK() -> Data {
-        var raw = Data(count: 32)
-        _ = raw.withUnsafeMutableBytes {
-            SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!)
-        }
-        return raw
+    /// 32-byte CEK from the system CSPRNG. Throws on RNG failure rather than
+    /// returning zeroed bytes — a silent zero CEK would yield trivially
+    /// recoverable ciphertext.
+    static func randomCEK() throws -> Data {
+        try Self.secureRandomBytes(count: 32)
     }
 
-    static func randomSalt(length: Int = 16) -> Data {
-        var raw = Data(count: length)
-        _ = raw.withUnsafeMutableBytes {
-            SecRandomCopyBytes(kSecRandomDefault, length, $0.baseAddress!)
+    /// `length`-byte random salt from the system CSPRNG. Same throw-on-failure
+    /// contract as `randomCEK()`.
+    static func randomSalt(length: Int = 16) throws -> Data {
+        try Self.secureRandomBytes(count: length)
+    }
+
+    /// Underlying SecRandomCopyBytes wrapper. Promoted to file scope so
+    /// callers can't accidentally swallow the status code.
+    private static func secureRandomBytes(count: Int) throws -> Data {
+        precondition(count > 0, "secureRandomBytes count must be positive")
+        var out = Data(count: count)
+        let status = out.withUnsafeMutableBytes { buf -> Int32 in
+            guard let base = buf.baseAddress else { return errSecParam }
+            return SecRandomCopyBytes(kSecRandomDefault, count, base)
         }
-        return raw
+        guard status == errSecSuccess else { throw Error.rngFailed(status) }
+        return out
     }
 }

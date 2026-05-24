@@ -26,7 +26,25 @@ enum APIError: Error, LocalizedError {
 final class APIClient {
     static let shared = APIClient()
 
-    let baseURL = URL(string: "https://mail.middleseat.vc")!
+    /// Base URL of the API. Resolution order:
+    ///   1. `BMAIL_API_BASE_URL` env var (set via the Xcode scheme for dev/staging)
+    ///   2. `BMAIL_API_BASE_URL` Info.plist key (set via xcconfig)
+    ///   3. Production fallback (`https://mail.middleseat.vc`)
+    /// Point at a wrangler-dev server during local development without
+    /// modifying source: `BMAIL_API_BASE_URL=http://localhost:8787 xcrun ...`.
+    static let baseURL: URL = {
+        if let raw = ProcessInfo.processInfo.environment["BMAIL_API_BASE_URL"],
+           let url = URL(string: raw) {
+            return url
+        }
+        if let raw = Bundle.main.object(forInfoDictionaryKey: "BMAIL_API_BASE_URL") as? String,
+           let url = URL(string: raw) {
+            return url
+        }
+        return URL(string: "https://mail.middleseat.vc")!
+    }()
+
+    let baseURL: URL = APIClient.baseURL
 
     let session: URLSession
     let decoder: JSONDecoder
@@ -52,7 +70,7 @@ final class APIClient {
         // automatically — no separate cookie-jar management needed.
         let transport = URLSessionTransport(configuration: .init(session: urlSession))
         openAPI = Client(
-            serverURL: URL(string: "https://mail.middleseat.vc")!,
+            serverURL: APIClient.baseURL,
             transport: transport
         )
     }

@@ -122,6 +122,13 @@ extension APIClient {
     // MARK: - secret_view
 
     /// Public metadata for the recipient landing page. Unauthenticated.
+    ///
+    /// On HTTP 410 the server signals the link has self-destructed and its
+    /// content has been wiped — we surface that as the structured
+    /// `SecretLinkError.selfDestructed` so the recipient UI can render the
+    /// distinct dead screen instead of a generic error. Revoked / expired
+    /// states are still discoverable on the live 200 path through the
+    /// `revoked` / `expired` fields of the returned `SecretLinkPublicView`.
     func secretView(token: String) async throws -> SecretLinkPublicView {
         let out = try await openAPI.secret_view(
             .init(path: .init(token: token))
@@ -132,10 +139,11 @@ extension APIClient {
         case .notFound(let n):
             throw secretAPIError(404, n.body)
         case .gone(let g):
-            // 410 from GET endpoint signals the link is expired/revoked/self-destructed.
-            // Map to a generic http error; the caller inspects the returned
-            // SecretLinkPublicView fields (revoked / expired / self_destructed) instead.
-            throw secretAPIError(410, g.body)
+            // 410 from GET → self-destructed. Inspect the error message in case
+            // a future server build distinguishes self-destruct vs revoked/expired
+            // here too; default to selfDestructed.
+            let msg = (try? g.body.json.error) ?? ""
+            throw mapOpenError(status: 410, errorMessage: msg.isEmpty ? "self_destructed" : msg)
         case .undocumented(let s, _):
             throw APIError.http(status: s, message: "secret_view")
         }

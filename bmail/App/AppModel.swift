@@ -43,14 +43,24 @@ final class AppModel {
     var biometryLabel: String { Keychain.biometryLabel }
 
     /// Toggle the biometric gate on the cached priv. Returns true if the
-    /// Keychain item was re-stored successfully, false if `priv` isn't
-    /// loaded yet (caller is logged out).
+    /// Keychain item was re-stored successfully. Returns false (and leaves the
+    /// preference unchanged) when:
+    ///   - the caller is logged out (priv not loaded), or
+    ///   - the system refused to mint a biometry access-control attribute, or
+    ///   - SecItemAdd failed.
+    /// The setter never silently downgrades a biometry-requested store to
+    /// non-biometric storage.
     @discardableResult
     func setBiometryLock(enabled: Bool) -> Bool {
         guard let me, let priv else { return false }
-        UserDefaults.standard.set(enabled, forKey: Self.biometryDefaultsKey)
-        Keychain.set(priv, for: Self.privKey(for: me.id), requireBiometry: enabled)
-        return true
+        do {
+            _ = try Keychain.set(priv, for: Self.privKey(for: me.id), requireBiometry: enabled)
+            UserDefaults.standard.set(enabled, forKey: Self.biometryDefaultsKey)
+            return true
+        } catch {
+            lastError = "couldn't update biometric lock: \(error)"
+            return false
+        }
     }
 
     var pub: Data? {
@@ -98,7 +108,16 @@ final class AppModel {
             let s = try await auth.loginWithPasskey()
             self.me = s.me
             self.priv = s.priv
-            Keychain.set(s.priv, for: Self.privKey(for: s.me.id), requireBiometry: biometryLockEnabled)
+            // If biometry is requested but the system refuses, fall back to
+            // non-biometric storage so the user isn't locked out post-login —
+            // but flip the local pref off so the UI reflects reality.
+            do {
+                _ = try Keychain.set(s.priv, for: Self.privKey(for: s.me.id), requireBiometry: biometryLockEnabled)
+            } catch {
+                _ = try? Keychain.set(s.priv, for: Self.privKey(for: s.me.id), requireBiometry: false)
+                UserDefaults.standard.set(false, forKey: Self.biometryDefaultsKey)
+                lastError = "biometric lock unavailable — stored without it"
+            }
             self.phase = .authenticated
             RealtimeClient.shared.start()
         } catch {
@@ -112,7 +131,16 @@ final class AppModel {
             let s = try await auth.loginWithRecovery(handle: handle, phrase: phrase)
             self.me = s.me
             self.priv = s.priv
-            Keychain.set(s.priv, for: Self.privKey(for: s.me.id), requireBiometry: biometryLockEnabled)
+            // If biometry is requested but the system refuses, fall back to
+            // non-biometric storage so the user isn't locked out post-login —
+            // but flip the local pref off so the UI reflects reality.
+            do {
+                _ = try Keychain.set(s.priv, for: Self.privKey(for: s.me.id), requireBiometry: biometryLockEnabled)
+            } catch {
+                _ = try? Keychain.set(s.priv, for: Self.privKey(for: s.me.id), requireBiometry: false)
+                UserDefaults.standard.set(false, forKey: Self.biometryDefaultsKey)
+                lastError = "biometric lock unavailable — stored without it"
+            }
             self.phase = .authenticated
             RealtimeClient.shared.start()
         } catch {
@@ -141,7 +169,13 @@ final class AppModel {
 
     func finishEnrollment() {
         if let me, let priv {
-            Keychain.set(priv, for: Self.privKey(for: me.id), requireBiometry: biometryLockEnabled)
+            do {
+                _ = try Keychain.set(priv, for: Self.privKey(for: me.id), requireBiometry: biometryLockEnabled)
+            } catch {
+                _ = try? Keychain.set(priv, for: Self.privKey(for: me.id), requireBiometry: false)
+                UserDefaults.standard.set(false, forKey: Self.biometryDefaultsKey)
+                lastError = "biometric lock unavailable — stored without it"
+            }
         }
         self.phase = .authenticated
         RealtimeClient.shared.start()

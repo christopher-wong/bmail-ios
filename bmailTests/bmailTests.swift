@@ -669,7 +669,7 @@ struct SecretLinkKDFTests {
     /// used for subject and body — mirrors web's encryptWithCek / decryptWithCek).
     @Test("encryptWithCEK / decryptWithCEK round-trip")
     func cekEncryptDecryptRoundTrip() throws {
-        let cek = SecretLinkCrypto.randomCEK()
+        let cek = try SecretLinkCrypto.randomCEK()
         let message = Data("Hello, secret world! 🔐".utf8)
         let ct = try SecretLinkCrypto.encryptWithCEK(message, cek: cek)
         let pt = try SecretLinkCrypto.decryptWithCEK(ct, cek: cek)
@@ -679,8 +679,8 @@ struct SecretLinkKDFTests {
     /// Verify that wrong key fails to decrypt.
     @Test("decryptWithCEK fails with wrong key")
     func cekDecryptFailsWithWrongKey() throws {
-        let cek = SecretLinkCrypto.randomCEK()
-        let wrongCek = SecretLinkCrypto.randomCEK()
+        let cek = try SecretLinkCrypto.randomCEK()
+        let wrongCek = try SecretLinkCrypto.randomCEK()
         let ct = try SecretLinkCrypto.encryptWithCEK(Data("payload".utf8), cek: cek)
         #expect(throws: (any Error).self) {
             try SecretLinkCrypto.decryptWithCEK(ct, cek: wrongCek)

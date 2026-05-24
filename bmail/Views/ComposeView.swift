@@ -524,11 +524,12 @@ struct ComposeView: View {
             return
         }
         do {
-            // 1. Mint CEK (32 random bytes).
-            let cek = SecretLinkCrypto.randomCEK()
+            // 1. Mint CEK (32 random bytes). Throws on CSPRNG failure rather
+            // than silently using a zero key.
+            let cek = try SecretLinkCrypto.randomCEK()
 
-            // 2. Generate a random 16-byte salt.
-            let salt = SecretLinkCrypto.randomSalt(length: 16)
+            // 2. Generate a random 16-byte salt. Same throw-on-failure contract.
+            let salt = try SecretLinkCrypto.randomSalt(length: 16)
 
             // 3. Derive KDF (Argon2id + HKDF split) on a background thread.
             let kdf = try await Task.detached(priority: .userInitiated) { [pw = secretPassword] in
@@ -745,10 +746,14 @@ struct ComposeView: View {
 
     private func uploadHosted(url: URL, filename: String, mime: String, fileSize: Int64) async {
         // Mint CEK lazily — one CEK per draft covers all hosted files.
+        // Throws on CSPRNG failure so we never encrypt with a zero key.
         if hostedCEK == nil {
-            var raw = Data(count: 32)
-            _ = raw.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
-            hostedCEK = raw
+            do {
+                hostedCEK = try SecretLinkCrypto.randomCEK()
+            } catch {
+                sendError = "couldn't mint hosted CEK: \(error)"
+                return
+            }
         }
         guard let cek = hostedCEK else { return }
 
