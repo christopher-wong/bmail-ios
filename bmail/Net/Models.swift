@@ -29,7 +29,7 @@ struct MeResp: Codable, Sendable {
 
 enum Direction: String, Codable, Hashable, Sendable { case `in`, out, draft }
 
-struct ThreadRow: Decodable, Identifiable, Hashable, Sendable {
+struct ThreadRow: Codable, Identifiable, Hashable, Sendable {
     let id: String
     let subject_hint: String?
     let first_subject_ct_b64: String?

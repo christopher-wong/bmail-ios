@@ -112,15 +112,33 @@ struct InboxView: View {
     // MARK: - Data
 
     private func load() async {
-        loading = true
         loadError = nil
+
+        // Seed from cache so offline still has a list to show.
+        let cached = MailCache.default.loadThreads(.inboxThreads)
+        if !cached.isEmpty {
+            threads = cached
+            loading = false
+            await decryptSubjects(cached)
+        } else {
+            loading = true
+        }
+
+        guard NetworkMonitor.shared.isOnline else {
+            loading = false
+            return
+        }
+
         do {
             let rows: [ThreadRow] = try await APIClient.shared.get("/api/threads?limit=100&inbound_only=1")
             threads = rows
+            MailCache.default.saveThreads(rows, scope: .inboxThreads)
             loading = false
             await decryptSubjects(rows)
         } catch {
-            loadError = (error as? LocalizedError)?.errorDescription ?? "Load failed"
+            if threads.isEmpty {
+                loadError = (error as? LocalizedError)?.errorDescription ?? "Load failed"
+            }
             loading = false
         }
     }

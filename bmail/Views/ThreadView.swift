@@ -68,6 +68,9 @@ struct ThreadView: View {
         .navigationBarBackButtonHidden(false)
         .toolbar { trailingMenu; bottomBar }
         .toolbarBackground(.thinMaterial, for: .bottomBar)
+        // Hide the parent TabView's tab bar while reading a thread so the
+        // bottom toolbar (Archive / Move / Trash / Reply) isn't drawn under it.
+        .toolbar(.hidden, for: .tabBar)
         .task { await load() }
         .sheet(item: $replyState) { rs in
             ComposeView(reply: rs)

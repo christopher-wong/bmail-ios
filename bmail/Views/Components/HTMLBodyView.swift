@@ -14,6 +14,8 @@ struct HTMLBodyView: View {
     }
 }
 
+private let bridgeWorld = WKContentWorld.world(name: "bmail-bridge")
+
 private struct SandboxedHTMLWebView: UIViewRepresentable {
     let html: String
     @Binding var measuredHeight: CGFloat
@@ -23,20 +25,27 @@ private struct SandboxedHTMLWebView: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
 
-        // Block all JavaScript. Inbound email HTML is hostile by default.
+        // Block all JavaScript in the document (page) world. Inbound email HTML
+        // is hostile by default, so any inline <script> stays inert.
         let prefs = WKWebpagePreferences()
         prefs.allowsContentJavaScript = false
         config.defaultWebpagePreferences = prefs
 
-        // Don't load remote images/CSS automatically (tracking pixels).
-        // The CSP in the document also enforces this; this is belt+suspenders.
         config.suppressesIncrementalRendering = false
 
-        // Bridge to read scrollHeight after layout. Privileged JS runs in
-        // an isolated world separate from the document world (which has
-        // JS disabled anyway), so untrusted content can't reach it.
+        // Privileged height bridge runs in a named isolated world. User scripts
+        // and message handlers in non-page worlds still execute when content JS
+        // is disabled in the page world, so the document JS context stays off
+        // while we still get the rendered height back from layout.
         let userContent = WKUserContentController()
-        userContent.add(context.coordinator, name: "heightDidChange")
+        let script = WKUserScript(
+            source: bridgeScript,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true,
+            in: bridgeWorld
+        )
+        userContent.addUserScript(script)
+        userContent.add(context.coordinator, contentWorld: bridgeWorld, name: "heightDidChange")
         config.userContentController = userContent
 
         let web = WKWebView(frame: .zero, configuration: config)
@@ -58,7 +67,10 @@ private struct SandboxedHTMLWebView: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ web: WKWebView, coordinator: Coordinator) {
-        web.configuration.userContentController.removeScriptMessageHandler(forName: "heightDidChange")
+        web.configuration.userContentController.removeScriptMessageHandler(
+            forName: "heightDidChange",
+            contentWorld: bridgeWorld
+        )
     }
 
     // MARK: - Document scaffolding
@@ -88,16 +100,6 @@ private struct SandboxedHTMLWebView: UIViewRepresentable {
         }
         pre, code { white-space: pre-wrap; }
         """
-        let script = """
-        function post() {
-          window.webkit.messageHandlers.heightDidChange.postMessage(
-            document.documentElement.scrollHeight
-          );
-        }
-        document.addEventListener('DOMContentLoaded', post);
-        window.addEventListener('load', post);
-        new ResizeObserver(post).observe(document.documentElement);
-        """
         return """
         <!doctype html>
         <html><head>
@@ -106,9 +108,29 @@ private struct SandboxedHTMLWebView: UIViewRepresentable {
           <meta http-equiv="Content-Security-Policy" content="\(csp)">
           <style>\(css)</style>
         </head>
-        <body>\(body)
-          <script>\(script)</script>
-        </body></html>
+        <body>\(body)</body></html>
+        """
+    }
+
+    private var bridgeScript: String {
+        // Injected into the bmail-bridge isolated world via WKUserScript.
+        // Runs even with allowsContentJavaScript=false because that flag only
+        // gates the page world.
+        """
+        (function() {
+          function post() {
+            try {
+              window.webkit.messageHandlers.heightDidChange.postMessage(
+                document.documentElement.scrollHeight
+              );
+            } catch (_) {}
+          }
+          post();
+          window.addEventListener('load', post);
+          if (typeof ResizeObserver !== 'undefined') {
+            new ResizeObserver(post).observe(document.documentElement);
+          }
+        })();
         """
     }
 

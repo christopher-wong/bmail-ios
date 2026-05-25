@@ -89,6 +89,7 @@ final class AppModel {
                 self.priv = cached
                 self.phase = .authenticated
                 RealtimeClient.shared.start()
+                PushCenter.shared.requestAuthorizationAndRegister()
             } else {
                 self.phase = .unauthenticated
             }
@@ -120,6 +121,7 @@ final class AppModel {
             }
             self.phase = .authenticated
             RealtimeClient.shared.start()
+            PushCenter.shared.requestAuthorizationAndRegister()
         } catch {
             lastError = (error as? LocalizedError)?.errorDescription ?? "\(error)"
         }
@@ -143,6 +145,7 @@ final class AppModel {
             }
             self.phase = .authenticated
             RealtimeClient.shared.start()
+            PushCenter.shared.requestAuthorizationAndRegister()
         } catch {
             lastError = (error as? LocalizedError)?.errorDescription ?? "\(error)"
         }
@@ -179,6 +182,7 @@ final class AppModel {
         }
         self.phase = .authenticated
         RealtimeClient.shared.start()
+        PushCenter.shared.requestAuthorizationAndRegister()
     }
 
     func addPasskey(label: String?) async -> Bool {
@@ -217,6 +221,8 @@ final class AppModel {
 
     func logout() async {
         RealtimeClient.shared.stop()
+        PushCenter.shared.unregister()
+        MailCache.default.clear()
         if let me {
             Keychain.delete(Self.privKey(for: me.id))
         }
