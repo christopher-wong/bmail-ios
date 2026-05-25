@@ -17,14 +17,32 @@ struct SecretMineView: View {
     @State private var revokeError: String?
     @State private var pendingRevoke: SecretSenderRow?
     @State private var copiedToken: String?
+    @State private var showCopiedHUD = false
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                SectionHeader(title: "SECRET LINKS")
+            ZStack {
+                Wallpaper()
                 content
+
+                // "Link copied" HUD toast
+                if showCopiedHUD {
+                    VStack {
+                        Spacer()
+                        Text("Link copied")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.primary)
+                            .padding(.horizontal, DS.Space.l)
+                            .padding(.vertical, DS.Space.m)
+                            .background(.regularMaterial, in: Capsule())
+                            .glassEdge(radius: 99)
+                            .padding(.bottom, DS.Space.xxl)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                }
             }
-            .background(Theme.inverseInk)
+            .navigationTitle("Secret links")
+            .navigationBarTitleDisplayMode(.large)
             .task { await load() }
             .refreshable { await load() }
             .confirmationDialog(
@@ -52,56 +70,67 @@ struct SecretMineView: View {
     @ViewBuilder
     private var content: some View {
         if loading && rows.isEmpty {
-            VStack(spacing: 16) {
+            VStack(spacing: DS.Space.m) {
                 ProgressView()
-                Text("loading…")
-                    .font(.mono(.footnote))
-                    .foregroundStyle(Theme.mute)
+                    .controlSize(.large)
+                    .tint(.accentColor)
+                Text("Loading…")
+                    .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let err = loadError {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(spacing: DS.Space.m) {
                 Text(err)
-                    .font(.mono(.footnote))
+                    .font(.subheadline)
                     .foregroundStyle(.red)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 16)
-                Button("RETRY") { Task { await load() } }
-                    .monoButton()
-                    .padding(.horizontal, 16)
-                Spacer()
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, DS.Space.xl)
+                Button("Retry") { Task { await load() } }
+                    .buttonStyle(.bordered)
+                    .tint(.accentColor)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if rows.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("no secret links yet.")
-                    .font(.mono(.subheadline))
-                    .padding(.horizontal, 16)
-                    .padding(.top, 20)
-                Text("enable the lock icon in compose to send one.")
-                    .font(.mono(.footnote))
-                    .foregroundStyle(Theme.mute)
-                    .padding(.horizontal, 16)
-                Spacer()
-            }
+            DSEmptyState(
+                systemName: "lock.shield",
+                title: "No secret links yet",
+                hint: "Enable the lock icon in compose to send a password-protected message."
+            )
         } else {
+            listContent
+        }
+    }
+
+    // MARK: - List
+
+    private var listContent: some View {
+        List {
             if let err = revokeError {
-                Text(err)
-                    .font(.mono(11))
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Hairline()
-            }
-            ScrollView {
-                VStack(spacing: 0) {
-                    ForEach(rows, id: \.token) { row in
-                        rowView(row)
-                        Hairline()
-                    }
+                Section {
+                    Text(err)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
                 }
             }
+
+            ForEach(rows, id: \.token) { row in
+                rowView(row)
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        if !row.revoked && !row.self_destructed && !isExpired(row) {
+                            Button(role: .destructive) {
+                                DSHaptics.notifyWarning()
+                                pendingRevoke = row
+                            } label: {
+                                Label("Revoke", systemImage: "xmark.circle")
+                            }
+                        }
+                    }
+            }
         }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
     }
 
     // MARK: - Row
@@ -110,113 +139,122 @@ struct SecretMineView: View {
         let now = Int64(Date().timeIntervalSince1970 * 1000)
         let expired = row.expires_at < now
         let dim = row.revoked || expired || row.self_destructed
-        let status = statusLabel(row: row, expired: expired)
 
-        return VStack(alignment: .leading, spacing: 0) {
-            // Recipient + status badge
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
+        return Button {
+            guard !dim else { return }
+            copyLink(row)
+        } label: {
+            HStack(spacing: DS.Space.m) {
+                // Lock icon as leading indicator
+                Image(systemName: row.self_destructed ? "flame" : "lock.fill")
+                    .font(.title3)
+                    .foregroundStyle(row.self_destructed ? .red : .accentColor)
+                    .symbolRenderingMode(.hierarchical)
+                    .frame(width: 32, height: 32)
+
+                VStack(alignment: .leading, spacing: DS.Space.xs) {
+                    // Recipient or share-link label
                     if let recipient = row.recipient_addr, !recipient.isEmpty {
                         Text(recipient)
-                            .font(.mono(.subheadline))
-                            .foregroundStyle(dim ? Theme.mute : Theme.ink)
+                            .font(.callout)
+                            .foregroundStyle(dim ? .secondary : .primary)
                             .lineLimit(1)
                             .truncationMode(.middle)
                     } else {
-                        Text("share link")
-                            .font(.mono(.subheadline))
+                        Text("Share link")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
                             .italic()
-                            .foregroundStyle(Theme.mute)
                     }
-                    if let hint = row.hint, !hint.isEmpty {
-                        Text("hint: \(hint)")
-                            .font(.mono(11))
-                            .foregroundStyle(Theme.mute)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
+
+                    // Meta: policy + stats
+                    HStack(spacing: DS.Space.s) {
+                        Text(policyLabel(row.policy))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+
+                        if row.opens_count > 0 {
+                            Text("·")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                            Text("\(row.opens_count) open\(row.opens_count == 1 ? "" : "s")")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        if row.fail_count > 0 {
+                            Text("·")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                            Text("\(row.fail_count) failed unlock\(row.fail_count == 1 ? "" : "s")")
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                        }
+                    }
+
+                    // Self-destructed badge
+                    if row.self_destructed {
+                        Label("Self-destructed", systemImage: "flame")
+                            .labelStyle(.titleAndIcon)
+                            .foregroundStyle(.red)
+                            .font(.caption)
                     }
                 }
-                Spacer()
-                statusBadge(status, selfDestructed: row.self_destructed)
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
-            .padding(.bottom, 6)
 
-            // Stats + policy
-            let created = Date(timeIntervalSince1970: Double(row.created_at) / 1000)
-            let expires = Date(timeIntervalSince1970: Double(row.expires_at) / 1000)
-            HStack(spacing: 12) {
-                Text(policyLabel(row.policy))
-                    .font(.mono(10))
-                    .foregroundStyle(Theme.mute)
-                Text("\(row.opens_count) open\(row.opens_count == 1 ? "" : "s")")
-                    .font(.mono(10))
-                    .foregroundStyle(Theme.mute)
-                if row.fail_count > 0 {
-                    Text("\(row.fail_count) failed")
-                        .font(.mono(10))
-                        .foregroundStyle(.red.opacity(0.8))
+                Spacer(minLength: 0)
+
+                VStack(alignment: .trailing, spacing: DS.Space.xs) {
+                    Text(relativeDate(row.created_at))
+                        .font(.dsMono(.footnote))
+                        .foregroundStyle(.secondary)
+
+                    if !dim {
+                        if copiedToken == row.token {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.footnote)
+                                .foregroundStyle(Color.accentColor)
+                        } else {
+                            Image(systemName: "doc.on.clipboard")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        statusPill(statusLabel(row: row, expired: expired))
+                    }
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 4)
-
-            Text("\(created.formatted(date: .abbreviated, time: .shortened)) · expires \(expires.formatted(date: .abbreviated, time: .omitted))")
-                .font(.mono(10))
-                .foregroundStyle(Theme.mute)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 8)
-
-            // Actions
-            if !dim {
-                HStack(spacing: 8) {
-                    let wasCopied = copiedToken == row.token
-                    Button(wasCopied ? "COPIED ✓" : "COPY LINK") {
-                        copyLink(row)
-                    }
-                    .monoButton()
-
-                    let isRevoking = revoking.contains(row.token)
-                    Button(isRevoking ? "REVOKING…" : "REVOKE") {
-                        pendingRevoke = row
-                    }
-                    .monoButton(disabled: isRevoking)
-                    .disabled(isRevoking)
-                    Spacer()
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 12)
-            }
+            .padding(.horizontal, DS.Space.l)
+            .padding(.vertical, DS.Space.m)
         }
+        .buttonStyle(.plain)
     }
 
-    private func statusBadge(_ label: String, selfDestructed: Bool) -> some View {
-        let color: Color = selfDestructed ? .red : Theme.mute
-        return Text(label.uppercased())
-            .font(.mono(9, .medium))
-            .tracking(1.0)
+    private func statusPill(_ text: String) -> some View {
+        let isDestructive = text == "Self-destructed" || text == "Revoked"
+        let color: Color = isDestructive ? .red : .secondary
+        return Text(text)
+            .font(.caption.weight(.medium))
             .foregroundStyle(color)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(color.opacity(0.5), lineWidth: 1))
+            .padding(.horizontal, DS.Space.s)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.12), in: Capsule())
     }
 
     private func statusLabel(row: SecretSenderRow, expired: Bool) -> String {
-        if row.self_destructed { return "self-destructed" }
-        if row.revoked          { return "revoked" }
-        if expired              { return "expired" }
-        if row.first_opened_at != nil { return "opened" }
-        return "active"
+        if row.self_destructed { return "Self-destructed" }
+        if row.revoked          { return "Revoked" }
+        if expired              { return "Expired" }
+        if row.first_opened_at != nil { return "Opened" }
+        return "Active"
     }
 
     private func policyLabel(_ policy: String) -> String {
         switch policy {
-        case "one_time": return "one-time"
+        case "one_time": return "One-time"
         case "1h":       return "1h after open"
         case "24h":      return "24h after open"
         case "14d":      return "14d after open"
-        case "never":    return "never (1y max)"
+        case "never":    return "Never (1y max)"
         default:         return policy
         }
     }
@@ -224,18 +262,18 @@ struct SecretMineView: View {
     // MARK: - Actions
 
     private func copyLink(_ row: SecretSenderRow) {
-        // The server stores the full URL in `url` on create, but SecretSenderRow
-        // only has the token. Reconstruct the URL from the known base.
         let url = "https://mail.middleseat.vc/s/\(row.token)"
         UIPasteboard.general.string = url
-        withAnimation {
+        DSHaptics.impactLight()
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
             copiedToken = row.token
+            showCopiedHUD = true
         }
-        // Clear the "COPIED ✓" state after 2 seconds.
         Task {
             try? await Task.sleep(for: .seconds(2))
-            if copiedToken == row.token {
-                copiedToken = nil
+            withAnimation(.easeOut(duration: 0.25)) {
+                showCopiedHUD = false
+                if copiedToken == row.token { copiedToken = nil }
             }
         }
     }
@@ -248,7 +286,7 @@ struct SecretMineView: View {
             _ = try await APIClient.shared.secretRevoke(token: row.token)
             rows.removeAll { $0.token == row.token }
         } catch {
-            revokeError = (error as? LocalizedError)?.errorDescription ?? "revoke failed"
+            revokeError = (error as? LocalizedError)?.errorDescription ?? "Revoke failed."
             await load()
         }
     }
@@ -264,5 +302,18 @@ struct SecretMineView: View {
         } catch {
             loadError = (error as? LocalizedError)?.errorDescription ?? "\(error)"
         }
+    }
+
+    // MARK: - Helpers
+
+    private func isExpired(_ row: SecretSenderRow) -> Bool {
+        row.expires_at < Int64(Date().timeIntervalSince1970 * 1000)
+    }
+
+    private func relativeDate(_ ms: Int64) -> String {
+        let date = Date(timeIntervalSince1970: Double(ms) / 1000)
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: .now)
     }
 }

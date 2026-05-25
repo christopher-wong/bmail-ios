@@ -1,8 +1,7 @@
 import SwiftUI
 
-/// Drafts list, presented from the compose sheet. Tapping a row loads that
-/// draft into the open compose form (replacing whatever is currently being
-/// composed). Swiping discards the row.
+/// Drafts list presented from the compose sheet. Tapping a row loads that
+/// draft into the open compose form. Swiping discards the draft.
 struct DraftPickerSheet: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
@@ -16,55 +15,71 @@ struct DraftPickerSheet: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                SectionHeader(title: "DRAFTS", trailing: {
-                    AnyView(
-                        Button("DONE") { dismiss() }.monoButton()
-                    )
-                })
+            ZStack {
+                // Wallpaper visible through the thick-material sheet background.
+                Wallpaper()
 
-                if loading {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if drafts.isEmpty {
-                    EmptyStateView(
-                        title: "no drafts",
-                        hint: "your autosaved drafts will show up here"
-                    )
-                } else {
-                    List {
-                        ForEach(drafts) { d in
-                            DraftPickerRow(
-                                draft: d,
-                                subject: subjects[d.id],
-                                isCurrent: d.id == currentDraftID
-                            )
-                            .contentShape(Rectangle())
-                            .onTapGesture { onPick(d) }
-                            .listRowInsets(EdgeInsets())
-                            .listRowSeparator(.visible, edges: .bottom)
-                            .listRowSeparatorTint(Theme.hairline)
-                            .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-                            .listRowBackground(Color.clear)
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button(role: .destructive) {
-                                    discardOne(d)
-                                } label: {
-                                    Image(systemName: "trash")
-                                }
-                                .tint(.red)
-                            }
-                        }
+                Group {
+                    if loading {
+                        ProgressView()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if drafts.isEmpty {
+                        DSEmptyState(
+                            systemName: "doc.text",
+                            title: "No drafts",
+                            hint: "Your autosaved drafts will show up here."
+                        )
+                    } else {
+                        draftList
                     }
-                    .listStyle(.plain)
-                    .scrollContentBackground(.hidden)
                 }
             }
-            .background(Theme.inverseInk)
+            .navigationTitle("Drafts")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
             .task { await load() }
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+        .presentationBackground(.thickMaterial)
+        .presentationCornerRadius(DS.Radius.sheet)
     }
+
+    // MARK: - Draft list
+
+    private var draftList: some View {
+        List {
+            ForEach(drafts) { d in
+                Button {
+                    onPick(d)
+                } label: {
+                    PickerDraftRow(
+                        draft: d,
+                        subject: subjects[d.id],
+                        isCurrent: d.id == currentDraftID
+                    )
+                }
+                .buttonStyle(.plain)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button(role: .destructive) {
+                        discardOne(d)
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+    }
+
+    // MARK: - Data
 
     private func load() async {
         loading = true
@@ -97,43 +112,66 @@ struct DraftPickerSheet: View {
     }
 }
 
-private struct DraftPickerRow: View {
+// MARK: - Picker row
+
+private struct PickerDraftRow: View {
     let draft: DraftRow
     let subject: String?
     let isCurrent: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Text(draft.to_addrs.first ?? "(no recipient)")
-                    .font(.mono(.subheadline, weight: .medium))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if isCurrent {
-                    Text("CURRENT")
-                        .font(.mono(.caption2, weight: .medium))
-                        .tracking(0.8)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .stroke(Theme.hairline, lineWidth: 1)
-                        )
-                        .foregroundStyle(Theme.mute)
+        HStack(alignment: .top, spacing: DS.Space.m) {
+            DSAvatar(initials: initials(from: draft.to_addrs.first ?? ""), size: .row)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: DS.Space.xs) {
+                    Text(recipientLabel)
+                        .font(.callout.weight(.regular))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    if isCurrent {
+                        Text("Current")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(Color.accentColor)
+                            .padding(.horizontal, DS.Space.xs)
+                            .padding(.vertical, 2)
+                            .background(Color.accentColor.opacity(0.12), in: Capsule())
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Text(RelativeDate.format(draft.updated_at))
+                        .font(.footnote.monospacedDigit())
+                        .foregroundStyle(DS.Color.inkFaint)
                 }
-                Spacer()
-                Text(RelativeDate.format(draft.updated_at))
-                    .font(.mono(.caption))
-                    .foregroundStyle(Theme.mute)
+
+                if let subj = subject, !subj.isEmpty {
+                    Text(subj)
+                        .font(.subheadline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                } else {
+                    Text("(no subject)")
+                        .font(.subheadline)
+                        .foregroundStyle(DS.Color.inkFaint)
+                        .lineLimit(1)
+                }
             }
-            Text(subject ?? "(no subject)")
-                .font(.mono(.footnote))
-                .foregroundStyle(subject == nil ? Theme.mute : Theme.ink)
-                .lineLimit(1)
-                .truncationMode(.tail)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, DS.Space.s)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var recipientLabel: String {
+        if draft.to_addrs.isEmpty { return "(no recipient)" }
+        let head = draft.to_addrs.prefix(2).joined(separator: ", ")
+        return head + (draft.to_addrs.count > 2 ? " +\(draft.to_addrs.count - 2)" : "")
+    }
+
+    private func initials(from raw: String) -> String {
+        let localPart = raw.split(separator: "@").first.map(String.init) ?? raw
+        return String(localPart.prefix(2)).uppercased()
     }
 }

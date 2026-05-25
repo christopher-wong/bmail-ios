@@ -10,45 +10,69 @@ struct DraftsView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                SectionHeader(title: "DRAFTS")
+            ZStack {
+                Wallpaper()
 
-                if loading {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if drafts.isEmpty {
-                    EmptyStateView(title: "no drafts")
-                } else {
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            ForEach(drafts) { d in
-                                DraftRowView(draft: d, subject: subjects[d.id], onDiscard: { discard(d.id) })
-                                    .contentShape(Rectangle())
-                                    .onTapGesture { resumingDraft = d }
-                                Hairline()
-                            }
-                        }
+                Group {
+                    if loading {
+                        ProgressView()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if drafts.isEmpty {
+                        DSEmptyState(
+                            systemName: "doc.text",
+                            title: "No drafts"
+                        )
+                    } else {
+                        draftList
                     }
                 }
             }
-            .background(Theme.inverseInk)
+            .navigationTitle("Drafts")
+            .navigationBarTitleDisplayMode(.large)
             .task { await load() }
             .refreshable { await load() }
-            .sheet(item: $resumingDraft) { d in ComposeView(resumeDraft: d) }
-            .onAppear {
-                if unsubscribe == nil {
-                    unsubscribe = RealtimeClient.shared.subscribe { ev in
-                        switch ev {
-                        case .draftUpsert, .draftDelete:
-                            Task { await load() }
-                        default:
-                            break
-                        }
-                    }
-                }
+            .sheet(item: $resumingDraft) { d in
+                ComposeView(resumeDraft: d)
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
+                    .presentationBackground(.thickMaterial)
+                    .presentationCornerRadius(DS.Radius.sheet)
             }
+            .onAppear { subscribeIfNeeded() }
             .onDisappear { unsubscribe?(); unsubscribe = nil }
         }
     }
+
+    // MARK: - Draft list
+
+    private var draftList: some View {
+        List {
+            ForEach(drafts) { d in
+                Button {
+                    resumingDraft = d
+                } label: {
+                    DraftMailRow(
+                        draft: d,
+                        subject: subjects[d.id]
+                    )
+                }
+                .buttonStyle(.plain)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button(role: .destructive) {
+                        discard(d.id)
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+    }
+
+    // MARK: - Data
 
     private func load() async {
         loading = true
@@ -78,30 +102,72 @@ struct DraftsView: View {
             _ = try? await APIClient.shared.delete("/api/drafts/\(id)")
         }
     }
-}
 
-private struct DraftRowView: View {
-    let draft: DraftRow
-    let subject: String?
-    let onDiscard: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(draft.to_addrs.first ?? "(no recipient)")
-                .font(.mono(14, .medium))
-            Text(subject ?? "(no subject)")
-                .font(.mono(13))
-                .foregroundStyle(subject == nil ? Theme.mute : Theme.ink)
-                .lineLimit(1)
-            HStack {
-                Text(RelativeDate.format(draft.updated_at))
-                    .font(.mono(11))
-                    .foregroundStyle(Theme.mute)
-                Spacer()
-                Button("DISCARD", action: onDiscard).monoButton()
+    private func subscribeIfNeeded() {
+        guard unsubscribe == nil else { return }
+        unsubscribe = RealtimeClient.shared.subscribe { ev in
+            switch ev {
+            case .draftUpsert, .draftDelete:
+                Task { await load() }
+            default:
+                break
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+    }
+}
+
+// MARK: - Draft mail row
+
+/// Variant of `MailRow` sized for drafts: recipient · subject · relative date.
+/// Extracted here to keep `MailRow` generic (it takes a `primary` string, not a `DraftRow`).
+private struct DraftMailRow: View {
+    let draft: DraftRow
+    let subject: String?
+
+    var body: some View {
+        HStack(alignment: .top, spacing: DS.Space.m) {
+            // Avatar from first recipient initial
+            DSAvatar(initials: initials(from: draft.to_addrs.first ?? ""), size: .row)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(recipientLabel)
+                        .font(.callout.weight(.regular))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    Spacer(minLength: DS.Space.xs)
+
+                    Text(RelativeDate.format(draft.updated_at))
+                        .font(.footnote.monospacedDigit())
+                        .foregroundStyle(DS.Color.inkFaint)
+                }
+
+                if let subj = subject, !subj.isEmpty {
+                    Text(subj)
+                        .font(.subheadline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                } else {
+                    Text("(no subject)")
+                        .font(.subheadline)
+                        .foregroundStyle(DS.Color.inkFaint)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(.vertical, DS.Space.s)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var recipientLabel: String {
+        if draft.to_addrs.isEmpty { return "(no recipient)" }
+        let head = draft.to_addrs.prefix(2).joined(separator: ", ")
+        return head + (draft.to_addrs.count > 2 ? " +\(draft.to_addrs.count - 2)" : "")
+    }
+
+    private func initials(from raw: String) -> String {
+        let localPart = raw.split(separator: "@").first.map(String.init) ?? raw
+        return String(localPart.prefix(2)).uppercased()
     }
 }

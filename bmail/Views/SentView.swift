@@ -9,38 +9,72 @@ struct SentView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                SectionHeader(title: "SENT")
+            ZStack {
+                Wallpaper()
 
-                if loading {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if threads.isEmpty {
-                    EmptyStateView(title: "no sent messages")
-                } else {
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            ForEach(threads) { t in
-                                ThreadRowView(
-                                    thread: t,
-                                    subject: subjects[t.id],
-                                    ownAddresses: Set((app.me?.addresses ?? []).map { $0.lowercased() })
-                                )
-                                .contentShape(Rectangle())
-                                .onTapGesture { openThread = t }
-                                Hairline()
-                            }
-                        }
+                Group {
+                    if loading {
+                        ProgressView()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if threads.isEmpty {
+                        DSEmptyState(
+                            systemName: "paperplane",
+                            title: "No sent messages"
+                        )
+                    } else {
+                        threadList
                     }
                 }
             }
-            .background(Theme.inverseInk)
-            .task { await load() }
-            .refreshable { await load() }
+            .navigationTitle("Sent")
+            .navigationBarTitleDisplayMode(.large)
             .navigationDestination(item: $openThread) { t in
                 ThreadView(threadID: t.id)
             }
+            .task { await load() }
+            .refreshable { await load() }
         }
     }
+
+    // MARK: - Thread list
+
+    private var threadList: some View {
+        List {
+            ForEach(threads) { t in
+                Button {
+                    openThread = t
+                } label: {
+                    MailRow(
+                        primary: recipientLabel(for: t),
+                        subject: subjects[t.id],
+                        snippet: nil,
+                        timestamp: t.last_message_at,
+                        unread: t.unread_count > 0,
+                        attachments: false,
+                        starred: t.has_starred
+                    )
+                }
+                .buttonStyle(.plain)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            }
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+    }
+
+    // MARK: - Recipient label
+
+    private func recipientLabel(for t: ThreadRow) -> String {
+        let ownAddresses = Set((app.me?.addresses ?? []).map { $0.lowercased() })
+        let others = t.participants.filter { !ownAddresses.contains($0.lowercased()) }
+        let list = others.isEmpty ? t.participants : others
+        if list.isEmpty { return "(no recipients)" }
+        let head = list.prefix(3).joined(separator: ", ")
+        return head + (list.count > 3 ? " +\(list.count - 3)" : "")
+    }
+
+    // MARK: - Data
 
     private func load() async {
         loading = true

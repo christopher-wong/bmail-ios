@@ -3,126 +3,100 @@ import SwiftUI
 struct LoginView: View {
     @Environment(AppModel.self) private var app
     @State private var signingIn = false
-    @State private var tab: Tab = .passkey
+    @State private var showRecovery = false
     @State private var showEnroll = false
 
-    enum Tab: Hashable { case passkey, recovery }
-
     var body: some View {
-        VStack(spacing: 0) {
-            Spacer(minLength: 0)
+        ZStack {
+            Wallpaper()
 
-            VStack(spacing: 28) {
-                VStack(spacing: 6) {
-                    Text("CFEMAIL")
-                        .font(.mono(14, .medium))
-                        .tracking(2.5)
-                        .foregroundStyle(Theme.ink)
-                    Text("enter")
-                        .font(.mono(40, .regular))
-                        .foregroundStyle(Theme.ink)
-                }
+            VStack(spacing: DS.Space.xl) {
+                Spacer()
 
-                VStack(spacing: 0) {
-                    HStack(spacing: 0) {
-                        TabButton(label: "PASSKEY", active: tab == .passkey) { tab = .passkey }
-                        TabButton(label: "RECOVERY PHRASE", active: tab == .recovery) { tab = .recovery }
+                // Glass card centred on screen
+                GlassCard(radius: DS.Radius.sheet) {
+                    VStack(spacing: DS.Space.xl) {
+                        // App identity
+                        VStack(spacing: DS.Space.s) {
+                            Image(systemName: "envelope.fill")
+                                .font(.system(size: 44, weight: .semibold))
+                                .foregroundStyle(Color.accentColor)
+                                .symbolRenderingMode(.hierarchical)
+
+                            Text("bmail")
+                                .font(.largeTitle.weight(.semibold))
+                                .tracking(-0.5)
+
+                            Text("Encrypted email")
+                                .font(.title3)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer().frame(height: DS.Space.s)
+
+                        // Primary action
+                        Button {
+                            Task {
+                                signingIn = true
+                                await app.loginWithPasskey()
+                                signingIn = false
+                            }
+                        } label: {
+                            if signingIn {
+                                ProgressView()
+                                    .controlSize(.regular)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, DS.Space.xs)
+                            } else {
+                                Label("Sign in with passkey", systemImage: "person.badge.key.fill")
+                                    .frame(maxWidth: .infinity)
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color.accentColor)
+                        .controlSize(.large)
+                        .disabled(signingIn)
+
+                        // Secondary action
+                        Button("Use recovery phrase") {
+                            showRecovery = true
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.accentColor)
+                        .font(.subheadline)
+
+                        // Inline error
+                        if let err = app.lastError {
+                            Text(err)
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                                .multilineTextAlignment(.center)
+                        }
                     }
-                    .overlay(Rectangle().stroke(Theme.hairline, lineWidth: 1))
-
-                    switch tab {
-                    case .passkey:
-                        passkeyPanel
-                    case .recovery:
-                        RecoveryLoginView()
-                    }
+                    .padding(DS.Space.xl)
                 }
-                .frame(maxWidth: 360)
-                .overlay(Rectangle().stroke(Theme.hairline, lineWidth: 1))
+                .padding(.horizontal, DS.Space.xl)
+                .frame(maxWidth: 400)
 
-                if let err = app.lastError {
-                    Text(err)
-                        .font(.mono(12))
-                        .foregroundStyle(.red)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 360)
-                }
+                Spacer()
 
+                // Invite-only hint
                 Button {
                     showEnroll = true
                 } label: {
-                    Text("no account? enroll with invite ▸")
-                        .font(.mono(11))
-                        .foregroundStyle(Theme.mute)
+                    Text("New here? Open an invite link to enroll.")
+                        .font(.footnote)
+                        .foregroundStyle(DS.Color.inkFaint)
                 }
                 .buttonStyle(.plain)
-                .padding(.top, 4)
+                .padding(.bottom, DS.Space.l)
             }
-
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.inverseInk)
+        .sheet(isPresented: $showRecovery) {
+            RecoveryLoginView()
+        }
         .sheet(isPresented: $showEnroll) {
             EnrollView()
         }
-    }
-
-    private var passkeyPanel: some View {
-        VStack(spacing: 0) {
-            Button {
-                Task {
-                    signingIn = true
-                    await app.loginWithPasskey()
-                    signingIn = false
-                }
-            } label: {
-                HStack {
-                    Spacer()
-                    if signingIn {
-                        ProgressView()
-                            .progressViewStyle(.circular)
-                            .tint(Theme.inverseInk)
-                    } else {
-                        Text("SIGN IN WITH PASSKEY ▸")
-                            .font(.mono(13, .medium))
-                            .tracking(1.5)
-                    }
-                    Spacer()
-                }
-                .padding(.vertical, 20)
-                .background(Theme.inverseBg)
-                .foregroundStyle(Theme.inverseInk)
-            }
-            .buttonStyle(.plain)
-            .disabled(signingIn)
-
-            Text("uses face id / touch id / your security key")
-                .font(.mono(11))
-                .foregroundStyle(Theme.mute)
-                .padding(.vertical, 18)
-                .frame(maxWidth: .infinity)
-                .overlay(alignment: .top) { Hairline() }
-        }
-    }
-}
-
-private struct TabButton: View {
-    let label: String
-    let active: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Text(label)
-                .font(.mono(11, .medium))
-                .tracking(1.0)
-                .padding(.vertical, 12)
-                .frame(maxWidth: .infinity)
-                .foregroundStyle(active ? Theme.inverseInk : Theme.ink)
-                .background(active ? Theme.inverseBg : Color.clear)
-        }
-        .buttonStyle(.plain)
     }
 }

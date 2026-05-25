@@ -52,6 +52,26 @@ struct RootView: View {
     }
 }
 
+// MARK: - Bootstrap screen
+
+private struct BootstrapView: View {
+    var body: some View {
+        ZStack {
+            Wallpaper()
+
+            VStack(spacing: DS.Space.xl) {
+                Image(systemName: "envelope.fill")
+                    .font(.system(size: 36, weight: .thin))
+                    .foregroundStyle(DS.Color.inkFaint)
+                    .symbolRenderingMode(.hierarchical)
+
+                ProgressView()
+                    .controlSize(.regular)
+            }
+        }
+    }
+}
+
 // MARK: - HostedLinkTarget
 
 /// Parsed token + CEK from either a Universal Link or the dev deep link scheme.
@@ -135,18 +155,5 @@ struct SecretLinkToken: Identifiable {
               !token.isEmpty else { return nil }
         self.token = token
         self.id = token
-    }
-}
-
-private struct BootstrapView: View {
-    var body: some View {
-        VStack(spacing: 20) {
-            Text("CFEMAIL")
-                .font(.mono(16, .bold))
-                .tracking(2)
-            ProgressView()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.inverseInk)
     }
 }

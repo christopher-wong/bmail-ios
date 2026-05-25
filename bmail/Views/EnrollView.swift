@@ -10,103 +10,239 @@ struct EnrollView: View {
     @State private var credLabel: String = "iPhone"
     @State private var busy = false
     @State private var recoveryPhrase: String?
-    @State private var savedConfirmed = false
+    @State private var phraseConfirmed = false
     @State private var copied = false
 
-    @ScaledMetric(relativeTo: .footnote) private var labelColumn: CGFloat = 110
-    @ScaledMetric(relativeTo: .caption) private var phraseIndexWidth: CGFloat = 22
-
     var body: some View {
-        VStack(spacing: 0) {
+        ZStack {
+            Wallpaper()
+
             if let phrase = recoveryPhrase {
                 recoveryStep(phrase: phrase)
             } else {
                 inviteStep
             }
         }
-        .background(Theme.inverseInk)
-        // Block swipe-to-dismiss once we're showing the recovery phrase —
-        // the phrase is generated exactly once and would be unrecoverable
-        // if the sheet closed before the user copied/wrote it down.
+        // Prevent accidental swipe-to-dismiss while the phrase is visible —
+        // it is generated exactly once and cannot be recovered.
         .interactiveDismissDisabled(recoveryPhrase != nil)
     }
 
-    // MARK: - Step 1: invite + passkey
+    // MARK: - Step 1: Invite token entry
 
     private var inviteStep: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("ENROLL")
-                    .font(.mono(12, .medium))
-                    .tracking(1.5)
-                Spacer()
-                Button("CANCEL") { dismiss() }.monoButton()
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            Hairline()
+        ScrollView {
+            VStack(spacing: DS.Space.xl) {
+                Spacer().frame(height: DS.Space.xl)
 
-            ScrollView {
-                VStack(spacing: 0) {
-                    intro
-                    fieldGroup
-                    if let err = app.lastError {
-                        Text(err)
-                            .font(.mono(12))
-                            .foregroundStyle(.red)
-                            .multilineTextAlignment(.leading)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 8)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                // Header outside card
+                HStack {
+                    VStack(alignment: .leading, spacing: DS.Space.xs) {
+                        Text("Enroll")
+                            .font(.largeTitle.weight(.semibold))
+                        Text("Paste your invite link or token to create an account.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
                     }
-                    actionRow
+                    Spacer()
+                    Button("Cancel") { dismiss() }
+                        .foregroundStyle(Color.accentColor)
                 }
+                .padding(.horizontal, DS.Space.xl)
+                .frame(maxWidth: 480)
+
+                GlassCard(radius: DS.Radius.sheet) {
+                    VStack(spacing: 0) {
+                        formRow(label: "Invite token") {
+                            TextEditor(text: $token)
+                                .font(.dsMono(.footnote))
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .scrollContentBackground(.hidden)
+                                .frame(minHeight: 60)
+                        }
+                        Divider().padding(.leading, DS.Space.l)
+                        formRow(label: "Handle") {
+                            TextField("Optional", text: $handle)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                        }
+                        Divider().padding(.leading, DS.Space.l)
+                        formRow(label: "Display name") {
+                            TextField("Optional", text: $displayName)
+                                .textInputAutocapitalization(.words)
+                                .autocorrectionDisabled()
+                        }
+                        Divider().padding(.leading, DS.Space.l)
+                        formRow(label: "Device") {
+                            TextField("This iPhone", text: $credLabel)
+                                .textInputAutocapitalization(.words)
+                        }
+                    }
+                }
+                .padding(.horizontal, DS.Space.xl)
+                .frame(maxWidth: 480)
+
+                if let err = app.lastError {
+                    Text(err)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, DS.Space.xl)
+                }
+
+                Button {
+                    Task { await enroll() }
+                } label: {
+                    if busy {
+                        ProgressView()
+                            .controlSize(.regular)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, DS.Space.xs)
+                    } else {
+                        Text("Create account")
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color.accentColor)
+                .controlSize(.large)
+                .disabled(busy || normalizedToken.isEmpty)
+                .padding(.horizontal, DS.Space.xl)
+                .frame(maxWidth: 480)
+
+                Spacer().frame(height: DS.Space.xl)
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    // MARK: - Step 2: Recovery phrase reveal
+
+    @ViewBuilder
+    private func recoveryStep(phrase: String) -> some View {
+        ScrollView {
+            VStack(spacing: DS.Space.xl) {
+                Spacer().frame(height: DS.Space.xl)
+
+                // Title block
+                VStack(spacing: DS.Space.m) {
+                    Text("Save your recovery phrase")
+                        .font(.largeTitle.weight(.semibold))
+                        .multilineTextAlignment(.center)
+
+                    Text("Twelve words. Write them down. Without them, you cannot recover this account.")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(4)
+
+                    DSEncryptionPill(label: "Read once")
+                        .accessibilityLabel("Shown one time only")
+                }
+                .padding(.horizontal, DS.Space.xl)
+                .frame(maxWidth: 480)
+
+                // Phrase grid
+                GlassCard(radius: DS.Radius.sheet) {
+                    VStack(spacing: DS.Space.l) {
+                        phraseGrid(phrase: phrase)
+
+                        // Copy button
+                        Button {
+                            copyPhrase(phrase)
+                        } label: {
+                            Label(
+                                copied ? "Copied" : "Copy phrase",
+                                systemImage: copied ? "checkmark" : "doc.on.doc"
+                            )
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(Color.accentColor)
+                        .animation(.easeInOut(duration: 0.2), value: copied)
+                    }
+                    .padding(DS.Space.l)
+                }
+                .padding(.horizontal, DS.Space.xl)
+                .frame(maxWidth: 480)
+
+                // Confirmation toggle
+                GlassCard(radius: DS.Radius.card) {
+                    Toggle(isOn: $phraseConfirmed) {
+                        Text("I've saved my recovery phrase somewhere safe.")
+                            .font(.subheadline)
+                    }
+                    .tint(Color.accentColor)
+                    .padding(DS.Space.l)
+                }
+                .padding(.horizontal, DS.Space.xl)
+                .frame(maxWidth: 480)
+
+                // Primary action
+                Button {
+                    app.finishEnrollment()
+                    dismiss()
+                } label: {
+                    Text("I've saved it")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color.accentColor)
+                .controlSize(.large)
+                .disabled(!phraseConfirmed)
+                .padding(.horizontal, DS.Space.xl)
+                .frame(maxWidth: 480)
+
+                Spacer().frame(height: DS.Space.xl)
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    // MARK: - Phrase grid
+
+    private func phraseGrid(phrase: String) -> some View {
+        let words = phrase.split(separator: " ").map(String.init)
+        return LazyVGrid(
+            columns: [GridItem(.flexible()), GridItem(.flexible())],
+            spacing: DS.Space.s
+        ) {
+            ForEach(Array(words.enumerated()), id: \.offset) { idx, word in
+                HStack(spacing: DS.Space.s) {
+                    Text("\(idx + 1)")
+                        .font(.dsMono(.footnote))
+                        .foregroundStyle(DS.Color.inkFaint)
+                        .frame(width: 20, alignment: .trailing)
+                    Text(word)
+                        .font(.dsMono(.body, weight: .medium))
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, DS.Space.m)
+                .padding(.vertical, DS.Space.s)
+                .background(
+                    RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+                        .fill(.thinMaterial)
+                )
             }
         }
     }
 
-    private var intro: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("paste the invite link or token below.")
-                .font(.mono(13))
-            Text("we'll create a passkey on this device and show you a one-time 12-word recovery phrase. write it down — without it or a passkey, your mailbox is unrecoverable.")
-                .font(.mono(11))
-                .foregroundStyle(Theme.mute)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
+    // MARK: - Helpers
 
-    private var fieldGroup: some View {
-        VStack(spacing: 0) {
-            Hairline()
-            inputRow(label: "token", text: $token, placeholder: "paste invite token", multiline: true)
-            Hairline()
-            inputRow(label: "handle", text: $handle, placeholder: "optional — server may already have one")
-            Hairline()
-            inputRow(label: "display name", text: $displayName, placeholder: "optional")
-            Hairline()
-            inputRow(label: "device", text: $credLabel, placeholder: "this iPhone")
-            Hairline()
+    private func formRow<Field: View>(label: String, @ViewBuilder field: () -> Field) -> some View {
+        HStack(spacing: DS.Space.m) {
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .frame(width: 104, alignment: .leading)
+            field()
+                .font(.body)
         }
-    }
-
-    private var actionRow: some View {
-        HStack {
-            Spacer()
-            Button(busy ? "ENROLLING…" : "CREATE ACCOUNT ▸") {
-                Task { await enroll() }
-            }
-            .monoButton(prominent: true, disabled: busy || normalizedToken.isEmpty)
-            .disabled(busy || normalizedToken.isEmpty)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.horizontal, DS.Space.l)
+        .padding(.vertical, DS.Space.m)
     }
 
     private var normalizedToken: String {
-        // Accept a full enrollment URL ("https://.../enroll/abc") or just the token.
         let raw = token.trimmingCharacters(in: .whitespacesAndNewlines)
         if let last = raw.split(separator: "/").last { return String(last) }
         return raw
@@ -124,127 +260,22 @@ struct EnrollView: View {
         if let phrase { recoveryPhrase = phrase }
     }
 
-    // MARK: - Step 2: recovery phrase reveal
-
-    @ViewBuilder
-    private func recoveryStep(phrase: String) -> some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("RECOVERY PHRASE")
-                    .font(.mono(12, .medium))
-                    .tracking(1.5)
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            Hairline()
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("write these 12 words down. you'll need them if you ever lose this device.")
-                        .font(.mono(12))
-                        .foregroundStyle(Theme.mute)
-
-                    phraseGrid(phrase: phrase)
-
-                    HStack {
-                        Spacer()
-                        Button(copied ? "COPIED ✓" : "COPY") {
-                            // Auto-expire the pasteboard entry and keep it on
-                            // this device — the recovery phrase is the master
-                            // mailbox secret; we don't want it on the system
-                            // pasteboard indefinitely or synced to other Macs.
-                            UIPasteboard.general.setItems(
-                                [[UIPasteboard.typeAutomatic: phrase]],
-                                options: [
-                                    .expirationDate: Date().addingTimeInterval(60),
-                                    .localOnly: true,
-                                ]
-                            )
-                            copied = true
-                            Task {
-                                try? await Task.sleep(for: .seconds(2))
-                                copied = false
-                            }
-                        }
-                        .monoButton()
-                    }
-
-                    Toggle(isOn: $savedConfirmed) {
-                        Text("i've saved my recovery phrase somewhere safe.")
-                            .font(.mono(12))
-                    }
-                    .tint(Theme.ink)
-                    .padding(.top, 8)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 16)
-            }
-
-            Hairline()
-            HStack {
-                Spacer()
-                Button("ENTER MAILBOX ▸") {
-                    app.finishEnrollment()
-                    dismiss()
-                }
-                .monoButton(prominent: true, disabled: !savedConfirmed)
-                .disabled(!savedConfirmed)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+    private func copyPhrase(_ phrase: String) {
+        // Auto-expiring, local-only pasteboard entry — the recovery phrase is
+        // the master mailbox secret and must not linger on the system pasteboard
+        // or sync to other devices.
+        UIPasteboard.general.setItems(
+            [[UIPasteboard.typeAutomatic: phrase]],
+            options: [
+                .expirationDate: Date().addingTimeInterval(60),
+                .localOnly: true,
+            ]
+        )
+        DSHaptics.notifySuccess()
+        copied = true
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            copied = false
         }
-    }
-
-    private func phraseGrid(phrase: String) -> some View {
-        let words = phrase.split(separator: " ").map(String.init)
-        return LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 0) {
-            ForEach(Array(words.enumerated()), id: \.offset) { idx, word in
-                HStack(spacing: 8) {
-                    Text("\(idx + 1)".padded(to: 2))
-                        .font(.mono(11))
-                        .foregroundStyle(Theme.mute)
-                        .frame(width: phraseIndexWidth, alignment: .trailing)
-                    Text(word)
-                        .font(.mono(14, .medium))
-                    Spacer()
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .overlay(Rectangle().stroke(Theme.hairline, lineWidth: 1))
-            }
-        }
-    }
-
-    // MARK: - Helpers
-
-    private func inputRow(label: String, text: Binding<String>, placeholder: String, multiline: Bool = false) -> some View {
-        HStack(alignment: .top, spacing: 0) {
-            Text(label)
-                .monoLabel()
-                .frame(width: labelColumn, alignment: .leading)
-                .padding(.top, 12)
-            if multiline {
-                TextEditor(text: text)
-                    .font(.mono(13))
-                    .frame(minHeight: 60)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .scrollContentBackground(.hidden)
-            } else {
-                TextField(placeholder, text: text)
-                    .font(.mono(13))
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .padding(.vertical, 12)
-            }
-        }
-        .padding(.horizontal, 16)
-    }
-}
-
-private extension String {
-    func padded(to length: Int) -> String {
-        count >= length ? self : String(repeating: " ", count: length - count) + self
     }
 }

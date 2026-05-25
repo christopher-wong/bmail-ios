@@ -2,6 +2,30 @@ import SwiftUI
 import Security
 import UniformTypeIdentifiers
 
+// MARK: - Attachment icon helper
+
+extension Image {
+    /// Returns an SF Symbol appropriate for a given MIME type.
+    static func attachmentIcon(for mime: String) -> Image {
+        let lower = mime.lowercased()
+        if lower.hasPrefix("image/") {
+            return Image(systemName: "photo.fill")
+        } else if lower.hasPrefix("video/") {
+            return Image(systemName: "video.fill")
+        } else if lower.hasPrefix("audio/") {
+            return Image(systemName: "music.note")
+        } else if lower.contains("pdf") || lower.contains("word") || lower.contains("text") {
+            return Image(systemName: "doc.fill")
+        } else if lower.contains("zip") || lower.contains("gzip") || lower.contains("tar") || lower.contains("compressed") {
+            return Image(systemName: "archivebox.fill")
+        } else {
+            return Image(systemName: "doc.fill")
+        }
+    }
+}
+
+// MARK: - ComposeView
+
 struct ComposeView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
@@ -22,11 +46,9 @@ struct ComposeView: View {
 
     // Hosted attachment state (files ≥ 10 MiB)
     @State private var pendingHostedFiles: [HostedFile] = []
-    @State private var pendingHostedFilenames: [String: String] = [:]  // r2Key → display name
-    // TODO(Phase 5): persist hostedCEK to a per-draft state file (IndexedDB equivalent)
-    // so a crash mid-compose doesn't strand ciphertext on R2 without a key.
+    @State private var pendingHostedFilenames: [String: String] = [:]
     @State private var hostedCEK: Data?
-    @State private var hostingProgress: [String: Double] = [:]         // r2Key → 0…1
+    @State private var hostingProgress: [String: Double] = [:]
     @State private var hostingTask: Task<Void, Never>?
 
     // Secret mode
@@ -36,14 +58,15 @@ struct ComposeView: View {
     @State private var secretHint: String = ""
     @State private var secretPolicy: String = "never"
 
-    /// Client-minted draft ID. Generated once at init for new drafts; replaced
-    /// with the server's id when resuming from the drafts list. Used as both
-    /// the autosave key and the DraftStateStore key for hosted-CEK recovery.
     @State private var draftID: String = UUID().uuidString
     @State private var savedAt: Int64?
     @State private var sending = false
     @State private var sendError: String?
     @State private var autosaveTask: Task<Void, Never>?
+
+    @State private var showCancelConfirm = false
+    @State private var showDraftsPicker = false
+    @State private var draftsCount: Int = 0
 
     struct PendingAttachment: Identifiable, Equatable {
         let id: String
@@ -54,92 +77,145 @@ struct ComposeView: View {
         let sizeBytes: Int64
     }
 
-    private static let hostedThresholdBytes: Int64 = 10 * 1024 * 1024  // 10 MiB
+    private static let hostedThresholdBytes: Int64 = 10 * 1024 * 1024
 
-    @ScaledMetric(relativeTo: .footnote) private var labelColumn: CGFloat = 70
-    @FocusState private var keyboardFocused: Bool
-
-    @State private var showDraftsPicker = false
-    @State private var draftsCount: Int = 0
+    @FocusState private var focusedField: Field?
+    enum Field: Hashable { case to, cc, bcc, subject, body, secretPassword, secretConfirm, secretHint }
 
     var addresses: [String] { app.me?.addresses ?? [] }
 
+    private var hasDraftContent: Bool {
+        !to.isEmpty || !subject.isEmpty || !bodyText.isEmpty
+    }
+
+    private var canSend: Bool {
+        !to.trimmingCharacters(in: .whitespaces).isEmpty && !sending
+    }
+
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                header
-
+            ScrollView {
                 VStack(spacing: 0) {
-                    fromField
-                    Hairline()
-                    addressField(label: "to", text: $to, placeholder: "someone@example.com")
-                    Hairline()
-                    addressField(label: "cc", text: $cc, placeholder: "")
-                    Hairline()
-                    addressField(label: "bcc", text: $bcc, placeholder: "")
-                    Hairline()
-                    addressField(label: "subject", text: $subject, placeholder: "")
-                    Hairline()
+                    // Secret mode toggle — always visible at top
+                    Toggle(isOn: $secretMode.animation(.snappy(duration: 0.22))) {
+                        Label("Lock with password", systemImage: secretMode ? "lock.fill" : "lock.open")
+                    }
+                    .toggleStyle(.switch)
+                    .tint(.accentColor)
+                    .padding(.horizontal, DS.Space.l)
+                    .padding(.vertical, DS.Space.m)
+                    .onChange(of: secretMode) { _, _ in DSHaptics.impactLight() }
+
+                    Divider()
+
+                    // Secret mode fields
                     if secretMode {
-                        secretFields
+                        secretSection
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+
+                    // Address + subject fields
+                    formFieldsSection
+
+                    // Body
+                    bodySection
+
+                    // Attachments / uploads
+                    if !attachments.isEmpty || !pendingHostedFiles.isEmpty || attaching || hostingTask != nil {
+                        attachmentsSection
+                    }
+
+                    // Error banner
+                    if let e = sendError {
+                        errorBanner(e)
                     }
                 }
-
-                if secretMode {
-                    Text("Subject and body will be encrypted with the password above. The recipient needs the password you choose.")
-                        .font(.mono(10))
-                        .foregroundStyle(Theme.mute)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.primary.opacity(0.03))
-                    Hairline()
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .background(.clear)
+            .navigationTitle(reply != nil ? "Reply" : "New message")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") {
+                        if hasDraftContent {
+                            showCancelConfirm = true
+                        } else {
+                            dismiss()
+                        }
+                    }
+                    .foregroundStyle(.primary)
                 }
 
-                TextEditor(text: $bodyText)
-                    .font(.mono(.subheadline))
-                    .scrollContentBackground(.hidden)
-                    .padding(12)
-                    .frame(maxHeight: .infinity)
-                    .focused($keyboardFocused)
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    // Draft saved indicator
+                    if let savedAt {
+                        Text(RelativeDate.format(savedAt))
+                            .font(.footnote)
+                            .foregroundStyle(DS.Color.inkFaint)
+                    }
 
-                if !attachments.isEmpty || !pendingHostedFiles.isEmpty || attaching || hostingTask != nil {
-                    Hairline()
-                    attachmentsBar
-                }
+                    // Drafts picker button
+                    Button {
+                        showDraftsPicker = true
+                    } label: {
+                        Label {
+                            if draftsCount > 0 {
+                                Text("\(draftsCount)")
+                            }
+                        } icon: {
+                            Image(systemName: draftsCount > 0 ? "tray.full" : "tray")
+                        }
+                    }
+                    .accessibilityLabel(draftsCount > 0 ? "Drafts, \(draftsCount) saved" : "Drafts")
 
-                if let e = sendError {
-                    Hairline()
-                    Text(e)
-                        .font(.mono(12))
-                        .foregroundStyle(.red)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    // Attach button
+                    Button {
+                        showFilePicker = true
+                    } label: {
+                        Image(systemName: "paperclip")
+                    }
+                    .disabled(attaching)
+                    .accessibilityLabel("Attach files")
+
+                    // Send button
+                    Button {
+                        Task { await send() }
+                        DSHaptics.notifySuccess()
+                    } label: {
+                        if sending {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Text("Send")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.accentColor)
+                    .disabled(!canSend)
                 }
             }
-            .background(Theme.inverseInk)
-            .toolbar(.hidden, for: .navigationBar)
-        }
-        .onAppear(perform: prefill)
-        .onChange(of: subject) { _, _ in scheduleAutosave() }
-        .onChange(of: bodyText) { _, _ in scheduleAutosave() }
-        .onChange(of: to) { _, _ in scheduleAutosave() }
-        .onChange(of: cc) { _, _ in scheduleAutosave() }
-        .onChange(of: bcc) { _, _ in scheduleAutosave() }
-        .fileImporter(
-            isPresented: $showFilePicker,
-            allowedContentTypes: [.item],
-            allowsMultipleSelection: true
-        ) { result in
-            Task { await handlePicked(result: result) }
-        }
-        .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Done") { keyboardFocused = false }
-                    .font(.mono(.footnote, weight: .medium))
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { focusedField = nil }
+                }
             }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationBackground(.thickMaterial)
+        .presentationCornerRadius(DS.Radius.sheet)
+        .confirmationDialog(
+            "Discard this draft?",
+            isPresented: $showCancelConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Discard draft", role: .destructive) {
+                DSHaptics.notifyWarning()
+                dismiss()
+            }
+            Button("Keep editing", role: .cancel) {}
         }
         .sheet(isPresented: $showDraftsPicker) {
             DraftPickerSheet(currentDraftID: draftID) { picked in
@@ -147,273 +223,391 @@ struct ComposeView: View {
                 showDraftsPicker = false
             }
         }
+        .fileImporter(
+            isPresented: $showFilePicker,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: true
+        ) { result in
+            Task { await handlePicked(result: result) }
+        }
+        .onAppear(perform: prefill)
+        .onChange(of: subject) { _, _ in scheduleAutosave() }
+        .onChange(of: bodyText) { _, _ in scheduleAutosave() }
+        .onChange(of: to) { _, _ in scheduleAutosave() }
+        .onChange(of: cc) { _, _ in scheduleAutosave() }
+        .onChange(of: bcc) { _, _ in scheduleAutosave() }
         .task { await refreshDraftCount() }
     }
 
-    // MARK: - Secret mode fields
+    // MARK: - Form sections
 
-    private var secretFields: some View {
+    private var formFieldsSection: some View {
         VStack(spacing: 0) {
-            secretPasswordField(label: "password", text: $secretPassword, placeholder: "choose a password")
-            Hairline()
-            secretPasswordField(label: "confirm", text: $secretPasswordConfirm, placeholder: "confirm password")
-            Hairline()
-            addressField(label: "hint", text: $secretHint, placeholder: "optional hint for recipient")
-            Hairline()
-            HStack(spacing: 0) {
-                Text("expires")
-                    .monoLabel()
-                    .frame(width: labelColumn, alignment: .leading)
-                Picker("", selection: $secretPolicy) {
-                    Text("never (1y max)").tag("never")
-                    Text("one-time view").tag("one_time")
-                    Text("1h after open").tag("1h")
-                    Text("24h after open").tag("24h")
-                    Text("14 days after open").tag("14d")
-                }
-                .pickerStyle(.menu)
-                .font(.mono(.subheadline))
-                .tint(Theme.ink)
-                Spacer()
+            // From
+            fromRow
+
+            Divider().padding(.leading, DS.Space.l)
+
+            // To
+            addressRow(
+                label: "To",
+                text: $to,
+                placeholder: "someone@example.com",
+                field: .to
+            )
+
+            Divider().padding(.leading, DS.Space.l)
+
+            addressRow(label: "Cc", text: $cc, placeholder: "", field: .cc)
+
+            Divider().padding(.leading, DS.Space.l)
+
+            addressRow(label: "Bcc", text: $bcc, placeholder: "", field: .bcc)
+
+            Divider().padding(.leading, DS.Space.l)
+
+            // Subject
+            HStack(spacing: DS.Space.m) {
+                Text("Subject")
+                    .font(.callout)
+                    .foregroundStyle(DS.Color.inkFaint)
+                    .frame(width: 64, alignment: .leading)
+                TextField("", text: $subject)
+                    .font(.body)
+                    .textInputAutocapitalization(.sentences)
+                    .focused($focusedField, equals: .subject)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            Hairline()
+            .padding(.horizontal, DS.Space.l)
+            .padding(.vertical, DS.Space.m)
         }
     }
 
-    private func secretPasswordField(label: String, text: Binding<String>, placeholder: String) -> some View {
-        HStack(spacing: 0) {
-            Text(label)
-                .monoLabel()
-                .frame(width: labelColumn, alignment: .leading)
-            SecureField(placeholder, text: text)
-                .font(.mono(.subheadline))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .focused($keyboardFocused)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-    }
-
-    private var attachmentsBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                // Regular (< 10 MiB) inline attachments
-                ForEach(attachments) { att in
-                    HStack(spacing: 6) {
-                        Text(att.filename)
-                            .font(.mono(11))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Text(formatBytes(att.sizeBytes))
-                            .font(.mono(10))
-                            .foregroundStyle(Theme.mute)
-                        Button {
-                            removeAttachment(att)
-                        } label: {
-                            Text("×")
-                                .font(.mono(.subheadline, weight: .medium))
-                                .foregroundStyle(Theme.mute)
-                                .frame(width: 28, height: 28)
-                                .contentShape(Rectangle())
-                                .accessibilityHidden(true)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Remove attachment \(att.filename)")
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .overlay(Rectangle().stroke(Theme.hairline, lineWidth: 1))
-                }
-                // Hosted (≥ 10 MiB) encrypted attachments
-                ForEach(pendingHostedFiles, id: \.r2_key) { hf in
-                    let name = pendingHostedFilenames[hf.r2_key] ?? hf.filename
-                    let progress = hostingProgress[hf.r2_key]
-                    HStack(spacing: 6) {
-                        if let p = progress, p < 1.0 {
-                            ProgressView(value: p)
-                                .progressViewStyle(.linear)
-                                .frame(width: 50)
-                                .tint(Theme.ink)
-                        } else {
-                            Image(systemName: "lock.fill")
-                                .font(.caption2)
-                                .foregroundStyle(Theme.mute)
-                                .accessibilityHidden(true)
-                        }
-                        Text(name)
-                            .font(.mono(11))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Text(formatBytes(hf.plaintext_size))
-                            .font(.mono(10))
-                            .foregroundStyle(Theme.mute)
-                        Button {
-                            removeHostedFile(hf)
-                        } label: {
-                            Text("×")
-                                .font(.mono(.subheadline, weight: .medium))
-                                .foregroundStyle(Theme.mute)
-                                .frame(width: 28, height: 28)
-                                .contentShape(Rectangle())
-                                .accessibilityHidden(true)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(progress != nil && progress! < 1.0)
-                        .accessibilityLabel("Remove hosted file \(name)")
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .overlay(Rectangle().stroke(Theme.hairline, lineWidth: 1))
-                }
-                if attaching || hostingTask != nil {
-                    ProgressView().padding(.horizontal, 6)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-        }
-    }
-
-    private var header: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Text(reply != nil ? "REPLY" : "NEW MESSAGE")
-                    .font(.mono(12, .medium))
-                    .tracking(1.5)
-                Spacer()
-                if let savedAt {
-                    Text("draft saved \(RelativeDate.format(savedAt))")
-                        .font(.mono(10))
-                        .foregroundStyle(Theme.mute)
-                }
-                Button {
-                    withAnimation(.snappy(duration: 0.2)) {
-                        secretMode.toggle()
-                    }
-                } label: {
-                    Image(systemName: secretMode ? "lock.fill" : "lock.open")
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(secretMode ? Theme.ink : Theme.mute)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 9)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(secretMode ? Theme.ink : Theme.hairline, lineWidth: secretMode ? 1.5 : 1)
-                        )
-                        .frame(minHeight: 44)
-                        .accessibilityHidden(true)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(secretMode ? "Secret mode on — tap to disable" : "Enable secret mode")
-                .accessibilityAddTraits(.isButton)
-
-                Button { showFilePicker = true } label: {
-                    Image(systemName: "paperclip")
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(Theme.ink)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 9)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(Theme.hairline, lineWidth: 1)
-                        )
-                        .frame(minHeight: 44)
-                        .opacity(attaching ? 0.4 : 1)
-                        .accessibilityHidden(true)
-                }
-                .buttonStyle(.plain)
-                .disabled(attaching)
-                .accessibilityLabel("Attach files")
-                .accessibilityAddTraits(.isButton)
-
-                Button { showDraftsPicker = true } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "tray.full")
-                            .font(.footnote.weight(.medium))
-                        if draftsCount > 0 {
-                            Text("\(draftsCount)")
-                                .font(.mono(.footnote, weight: .medium))
-                        }
-                    }
-                    .foregroundStyle(Theme.ink)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(Theme.hairline, lineWidth: 1)
-                    )
-                    .frame(minHeight: 44)
-                    .accessibilityHidden(true)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(draftsCount > 0 ? "Drafts, \(draftsCount) saved" : "Drafts")
-                .accessibilityAddTraits(.isButton)
-
-                Button("CANCEL") { dismiss() }
-                    .monoButton()
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-
-                Button(sending ? "…" : "SEND ▸") {
-                    Task { await send() }
-                }
-                .monoButton(prominent: true, disabled: sending || to.isEmpty)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-                .disabled(sending || to.isEmpty)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            Hairline()
-        }
-    }
-
-    private var fromField: some View {
-        HStack(spacing: 0) {
-            Text("from")
-                .monoLabel()
-                .frame(width: labelColumn, alignment: .leading)
+    private var fromRow: some View {
+        HStack(spacing: DS.Space.m) {
+            Text("From")
+                .font(.callout)
+                .foregroundStyle(DS.Color.inkFaint)
+                .frame(width: 64, alignment: .leading)
             Menu {
                 ForEach(addresses, id: \.self) { a in
                     Button(a) { from = a }
                 }
             } label: {
-                HStack(spacing: 4) {
+                HStack(spacing: DS.Space.xs) {
                     Text(from.isEmpty ? "—" : from)
-                        .font(.mono(.subheadline))
-                        .foregroundStyle(Theme.ink)
+                        .font(.body.monospaced())
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.caption2.weight(.medium))
-                        .foregroundStyle(Theme.mute)
-                        .accessibilityHidden(true)
-                    Spacer()
+                        .foregroundStyle(DS.Color.inkFaint)
+                    Spacer(minLength: 0)
                 }
             }
             .accessibilityLabel("From address")
             .accessibilityValue(from)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, DS.Space.l)
+        .padding(.vertical, DS.Space.m)
     }
 
-    private func addressField(label: String, text: Binding<String>, placeholder: String) -> some View {
-        HStack(spacing: 0) {
+    private func addressRow(
+        label: String,
+        text: Binding<String>,
+        placeholder: String,
+        field: Field
+    ) -> some View {
+        HStack(spacing: DS.Space.m) {
             Text(label)
-                .monoLabel()
-                .frame(width: labelColumn, alignment: .leading)
+                .font(.callout)
+                .foregroundStyle(DS.Color.inkFaint)
+                .frame(width: 64, alignment: .leading)
             TextField(placeholder, text: text)
-                .font(.mono(.subheadline))
+                .font(.dsMono(.body))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-                .focused($keyboardFocused)
-                .submitLabel(label == "subject" ? .next : .next)
+                .keyboardType(.emailAddress)
+                .focused($focusedField, equals: field)
+                .submitLabel(.next)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, DS.Space.l)
+        .padding(.vertical, DS.Space.m)
     }
+
+    private var bodySection: some View {
+        VStack(spacing: 0) {
+            Divider()
+            TextEditor(text: $bodyText)
+                .font(.body)
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: 160)
+                .padding(.horizontal, DS.Space.m)
+                .padding(.vertical, DS.Space.s)
+                .focused($focusedField, equals: .body)
+        }
+    }
+
+    // MARK: - Secret mode section
+
+    private var secretSection: some View {
+        GlassCard(radius: DS.Radius.card) {
+            VStack(spacing: 0) {
+                // Header pill
+                HStack {
+                    DSEncryptionPill(label: "password-locked")
+                    Spacer()
+                }
+                .padding(.horizontal, DS.Space.l)
+                .padding(.top, DS.Space.m)
+                .padding(.bottom, DS.Space.xs)
+
+                Divider().padding(.leading, DS.Space.l)
+
+                secretPasswordRow(
+                    label: "Password",
+                    text: $secretPassword,
+                    placeholder: "Choose a password",
+                    field: .secretPassword
+                )
+
+                Divider().padding(.leading, DS.Space.l)
+
+                secretPasswordRow(
+                    label: "Confirm",
+                    text: $secretPasswordConfirm,
+                    placeholder: "Confirm password",
+                    field: .secretConfirm
+                )
+
+                Divider().padding(.leading, DS.Space.l)
+
+                // Hint
+                HStack(spacing: DS.Space.m) {
+                    Text("Hint")
+                        .font(.callout)
+                        .foregroundStyle(DS.Color.inkFaint)
+                        .frame(width: 72, alignment: .leading)
+                    TextField("Optional hint for recipient", text: $secretHint)
+                        .font(.body)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .focused($focusedField, equals: .secretHint)
+                }
+                .padding(.horizontal, DS.Space.l)
+                .padding(.vertical, DS.Space.m)
+
+                Divider().padding(.leading, DS.Space.l)
+
+                // Expiry picker
+                HStack(spacing: DS.Space.m) {
+                    Text("Expires")
+                        .font(.callout)
+                        .foregroundStyle(DS.Color.inkFaint)
+                        .frame(width: 72, alignment: .leading)
+                    Picker("Expiry", selection: $secretPolicy) {
+                        Text("Never (1 year max)").tag("never")
+                        Text("One-time view").tag("one_time")
+                        Text("1 hour after open").tag("1h")
+                        Text("24 hours after open").tag("24h")
+                        Text("14 days after open").tag("14d")
+                    }
+                    .pickerStyle(.menu)
+                    .tint(.accentColor)
+                    Spacer()
+                }
+                .padding(.horizontal, DS.Space.l)
+                .padding(.vertical, DS.Space.m)
+
+                // Info note
+                Text("Subject and body are encrypted with the password above. Share the password separately — not in this email.")
+                    .font(.footnote)
+                    .foregroundStyle(DS.Color.inkFaint)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, DS.Space.l)
+                    .padding(.bottom, DS.Space.m)
+            }
+        }
+        .padding(.horizontal, DS.Space.l)
+        .padding(.vertical, DS.Space.s)
+    }
+
+    private func secretPasswordRow(
+        label: String,
+        text: Binding<String>,
+        placeholder: String,
+        field: Field
+    ) -> some View {
+        HStack(spacing: DS.Space.m) {
+            Text(label)
+                .font(.callout)
+                .foregroundStyle(DS.Color.inkFaint)
+                .frame(width: 72, alignment: .leading)
+            SecureField(placeholder, text: text)
+                .font(.body)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .focused($focusedField, equals: field)
+        }
+        .padding(.horizontal, DS.Space.l)
+        .padding(.vertical, DS.Space.m)
+    }
+
+    // MARK: - Attachments section
+
+    private var attachmentsSection: some View {
+        VStack(alignment: .leading, spacing: DS.Space.s) {
+            Divider()
+
+            // Hosted attachments banner
+            if !pendingHostedFiles.isEmpty {
+                HStack {
+                    DSEncryptionPill(label: "Encrypted attachments")
+                    Spacer()
+                }
+                .padding(.horizontal, DS.Space.l)
+                .padding(.top, DS.Space.s)
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: DS.Space.s) {
+                    // Inline attachments
+                    ForEach(attachments) { att in
+                        inlineAttachmentChip(att)
+                    }
+
+                    // Hosted attachments
+                    ForEach(pendingHostedFiles, id: \.r2_key) { hf in
+                        hostedAttachmentChip(hf)
+                    }
+
+                    if attaching || hostingTask != nil {
+                        ProgressView()
+                            .padding(.horizontal, DS.Space.m)
+                    }
+                }
+                .padding(.horizontal, DS.Space.l)
+                .padding(.vertical, DS.Space.s)
+            }
+        }
+    }
+
+    private func inlineAttachmentChip(_ att: PendingAttachment) -> some View {
+        HStack(spacing: DS.Space.xs) {
+            Image.attachmentIcon(for: att.mime)
+                .font(.caption2)
+                .foregroundStyle(DS.Color.inkFaint)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(att.filename)
+                    .font(.subheadline)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(formatBytes(att.sizeBytes))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Button {
+                removeAttachment(att)
+                DSHaptics.impactLight()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(DS.Color.inkFaint)
+                    .frame(width: 20, height: 20)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remove \(att.filename)")
+        }
+        .padding(.horizontal, DS.Space.m)
+        .padding(.vertical, DS.Space.s)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.button, style: .continuous))
+        .glassEdge(radius: DS.Radius.button)
+    }
+
+    private func hostedAttachmentChip(_ hf: HostedFile) -> some View {
+        let name = pendingHostedFilenames[hf.r2_key] ?? hf.filename
+        let progress = hostingProgress[hf.r2_key]
+        let isUploading = progress != nil && progress! < 1.0
+
+        return VStack(alignment: .leading, spacing: DS.Space.xs) {
+            HStack(spacing: DS.Space.xs) {
+                if isUploading {
+                    ProgressView()
+                        .controlSize(.mini)
+                } else {
+                    Image(systemName: "lock.fill")
+                        .font(.caption2)
+                        .foregroundStyle(Color.accentColor)
+                }
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(name)
+                        .font(.subheadline)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(formatBytes(hf.plaintext_size))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                Button {
+                    removeHostedFile(hf)
+                    DSHaptics.impactLight()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(DS.Color.inkFaint)
+                        .frame(width: 20, height: 20)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(isUploading)
+                .accessibilityLabel("Remove \(name)")
+            }
+
+            // Upload progress bar
+            if let p = progress, p < 1.0 {
+                ProgressView(value: p)
+                    .progressViewStyle(.linear)
+                    .tint(.accentColor)
+                    .frame(maxWidth: 120)
+            }
+        }
+        .padding(.horizontal, DS.Space.m)
+        .padding(.vertical, DS.Space.s)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.button, style: .continuous))
+        .glassEdge(radius: DS.Radius.button)
+    }
+
+    // MARK: - Error banner
+
+    private func errorBanner(_ message: String) -> some View {
+        HStack(spacing: DS.Space.s) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.red)
+            Text(message)
+                .font(.footnote)
+                .foregroundStyle(.red)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                withAnimation { sendError = nil }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, DS.Space.l)
+        .padding(.vertical, DS.Space.m)
+        .background(Color(.systemRed).opacity(0.08))
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    // MARK: - Logic (unchanged from original)
 
     private func prefill() {
         if from.isEmpty, let a = addresses.first { from = a }
@@ -436,14 +630,10 @@ struct ComposeView: View {
                     bodyText = plain
                 }
             }
-            // Recover hosted-attachment state from disk so any partially-uploaded
-            // files from a previous session are restored. Runs synchronously on
-            // the main thread; the file read is tiny (JSON, < 1 KB typical).
             hydrateHostedState(for: d.id)
         }
     }
 
-    /// Restore hosted CEK + file list from DraftStateStore for `draftID`.
     private func hydrateHostedState(for id: String) {
         guard let saved = DraftStateStore.default.loadHosted(draftID: id) else { return }
         guard let cek = Data(b64u: saved.cekB64) else { return }
@@ -503,7 +693,6 @@ struct ComposeView: View {
         sendError = nil
         sending = true
         defer { sending = false }
-
         if secretMode {
             await sendSecret()
         } else {
@@ -514,24 +703,17 @@ struct ComposeView: View {
     // MARK: Secret send pipeline
 
     private func sendSecret() async {
-        // Validate password fields first.
         guard !secretPassword.isEmpty else {
-            sendError = "enter a password for the secret link"
+            sendError = "Enter a password for the secret link"
             return
         }
         guard secretPassword == secretPasswordConfirm else {
-            sendError = "passwords don't match"
+            sendError = "Passwords don't match"
             return
         }
         do {
-            // 1. Mint CEK (32 random bytes). Throws on CSPRNG failure rather
-            // than silently using a zero key.
             let cek = try SecretLinkCrypto.randomCEK()
-
-            // 2. Generate a random 16-byte salt. Same throw-on-failure contract.
             let salt = try SecretLinkCrypto.randomSalt(length: 16)
-
-            // 3. Derive KDF (Argon2id + HKDF split) on a background thread.
             let kdf = try await Task.detached(priority: .userInitiated) { [pw = secretPassword] in
                 try SecretLinkCrypto.derive(
                     password: pw,
@@ -539,34 +721,17 @@ struct ComposeView: View {
                     kdfParams: .default
                 )
             }.value
-
-            // 4. AES-GCM-wrap the CEK with kdf.wrapKey → password_wrap_b64.
             let passwordWrap = try SecretLinkCrypto.wrapCEK(cek, wrapKey: kdf.wrapKey)
-
-            // 5. Encrypt subject and body with the single-blob format (CEK, no AAD).
             let subjectCT = try SecretLinkCrypto.encryptWithCEK(Data(subject.utf8), cek: cek)
             let bodyCT    = try SecretLinkCrypto.encryptWithCEK(Data(bodyText.utf8), cek: cek)
-
-            // 6. Upload attachments (encrypt each chunk with ChunkedAEAD).
-            //    Inline attachments (< 10 MiB) are reuploaded under the secret CEK.
-            //    Hosted attachments already uploaded under a different CEK are not
-            //    reused; instead the user should attach them again in secret mode.
             var secretAttachments: [SecretAttachmentRef] = []
             for att in attachments {
-                // Encrypt the filename as a single-chunk framed blob.
                 let filenameCT = try ChunkedAEAD.encryptChunk(
                     cek: cek,
                     plaintext: Data(att.filename.utf8),
                     chunkIndex: 0,
                     isFinal: true
                 )
-
-                // Fetch the plaintext bytes from the already-uploaded r2 blob.
-                // Since the attachment was uploaded plaintext (kind=.attach), we
-                // can't re-encrypt in-place; we'd need the plaintext. For this
-                // phase we upload the already-stored attachment data without
-                // re-encrypting its body — only the filename_ct wraps.
-                // TODO(Phase 5): pipe plaintext bytes through Uploader with secret CEK.
                 secretAttachments.append(SecretAttachmentRef(
                     r2_key: att.r2Key,
                     mime: att.mime,
@@ -577,11 +742,8 @@ struct ComposeView: View {
                     chunk_count: 1
                 ))
             }
-
-            // 7. Build the create request.
             let kdfParamsJSON = (try? JSONEncoder().encode(ArgonParams.default))
                 .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-
             let req = SecretCreateReq(
                 recipient: splitAddrs(to).first,
                 hint: secretHint.isEmpty ? nil : secretHint,
@@ -594,15 +756,10 @@ struct ComposeView: View {
                 body_ct_b64: bodyCT.b64u,
                 attachments: secretAttachments.isEmpty ? nil : secretAttachments
             )
-
-            // 8. Create the secret link — get back token + url.
             let resp = try await APIClient.shared.secretCreate(req: req)
             let shareURL = resp.url
-
-            // 9. Append the link to the outgoing email body and send.
             let linkBody = "\n\nView encrypted message: \(shareURL)\n(Share the password separately — not in this email.)"
             let plainBody = "[This message is encrypted. Open the link below to read it.]\(linkBody)"
-
             let sendReq = SendReq(
                 from: from,
                 from_name: app.me?.display_name,
@@ -614,11 +771,10 @@ struct ComposeView: View {
                 html: nil,
                 in_reply_to: reply?.messageId,
                 references: nil,
-                attachments: []  // attachments travel through the secret link, not MIME
+                attachments: []
             )
             let _: SendResp = try await APIClient.shared.post("/api/messages/send", sendReq)
             _ = try? await APIClient.shared.delete("/api/drafts/\(draftID)")
-            // Secret mode doesn't use hosted attachments, but clear defensively.
             DraftStateStore.default.clearHosted(draftID: draftID)
             dismiss()
         } catch {
@@ -626,13 +782,11 @@ struct ComposeView: View {
         }
     }
 
-    // MARK: Plain send pipeline (unchanged)
+    // MARK: Plain send pipeline
 
     private func sendPlain() async {
         do {
             var finalBodyText = bodyText
-
-            // If there are hosted attachments, register them and append share URLs.
             if !pendingHostedFiles.isEmpty, let cek = hostedCEK {
                 let sealedCEK = try Crypto.sealToSelf(cek, pub: app.pub!)
                 let resp = try await APIClient.shared.hostedCreate(
@@ -648,7 +802,6 @@ struct ComposeView: View {
                 }.joined(separator: "\n")
                 finalBodyText += "\n\nHosted attachments:\n\(fileLines)"
             }
-
             let req = SendReq(
                 from: from,
                 from_name: app.me?.display_name,
@@ -671,7 +824,6 @@ struct ComposeView: View {
             )
             let _: SendResp = try await APIClient.shared.post("/api/messages/send", req)
             _ = try? await APIClient.shared.delete("/api/drafts/\(draftID)")
-            // Hosted-attachment state is committed server-side now — drop the local copy.
             DraftStateStore.default.clearHosted(draftID: draftID)
             dismiss()
         } catch {
@@ -684,8 +836,6 @@ struct ComposeView: View {
     private func handlePicked(result: Result<[URL], Error>) async {
         switch result {
         case .success(let urls):
-            // Each file may take a very different code path (inline vs hosted)
-            // but we still gate the whole batch under `attaching` for the spinner.
             attaching = true
             defer { attaching = false }
             for url in urls {
@@ -696,8 +846,6 @@ struct ComposeView: View {
         }
     }
 
-    /// Files < 10 MiB: inline MIME via existing AttachmentService path.
-    /// Files ≥ 10 MiB: end-to-end encrypted hosted upload via Uploader.
     private func uploadOne(_ url: URL) async {
         let needsScope = url.startAccessingSecurityScopedResource()
         defer { if needsScope { url.stopAccessingSecurityScopedResource() } }
@@ -706,14 +854,9 @@ struct ComposeView: View {
             let fileSize = resourceValues.fileSize.map { Int64($0) } ?? 0
             let filename = url.lastPathComponent
             let mime = (UTType(filenameExtension: url.pathExtension)?.preferredMIMEType) ?? "application/octet-stream"
-
             if fileSize >= Self.hostedThresholdBytes {
-                // Hosted path: encrypt on-the-fly, upload to R2.
                 await uploadHosted(url: url, filename: filename, mime: mime, fileSize: fileSize)
             } else {
-                // Inline attachment path: stream through the unified uploads
-                // pipeline with kind=.attach. The server registers a mailbox
-                // attachment row and returns its id on /complete.
                 let filenameCT: String? = {
                     guard let pub = app.pub else { return nil }
                     return (try? Crypto.sealToSelf(Data(filename.utf8), pub: pub))?.b64u
@@ -745,23 +888,17 @@ struct ComposeView: View {
     }
 
     private func uploadHosted(url: URL, filename: String, mime: String, fileSize: Int64) async {
-        // Mint CEK lazily — one CEK per draft covers all hosted files.
-        // Throws on CSPRNG failure so we never encrypt with a zero key.
         if hostedCEK == nil {
             do {
                 hostedCEK = try SecretLinkCrypto.randomCEK()
             } catch {
-                sendError = "couldn't mint hosted CEK: \(error)"
+                sendError = "Couldn't mint hosted CEK: \(error)"
                 return
             }
         }
         guard let cek = hostedCEK else { return }
-
-        // Placeholder r2Key is overwritten once upload completes.
-        // Track progress by a temporary key derived from filename+size.
         let progressKey = "\(filename)-\(fileSize)"
         hostingProgress[progressKey] = 0.0
-
         do {
             let result = try await Uploader.shared.upload(
                 source: url,
@@ -782,7 +919,6 @@ struct ComposeView: View {
                     }
                 }
             )
-
             let hostedFile = HostedFile(
                 r2_key: result.r2Key,
                 size: result.size,
@@ -792,15 +928,10 @@ struct ComposeView: View {
                 filename: filename,
                 mime: mime
             )
-
-            // Move progress tracking to the real r2Key.
             hostingProgress.removeValue(forKey: progressKey)
             hostingProgress[result.r2Key] = 1.0
             pendingHostedFiles.append(hostedFile)
             pendingHostedFilenames[result.r2Key] = filename
-
-            // Persist hosted state so a crash / app kill doesn't strand the
-            // ciphertext on R2 without its key. (Phase 5 recovery point.)
             persistHostedState()
         } catch {
             hostingProgress.removeValue(forKey: progressKey)
@@ -808,7 +939,6 @@ struct ComposeView: View {
         }
     }
 
-    /// Build the current HostedDraftState snapshot and write it to disk.
     private func persistHostedState() {
         guard let cek = hostedCEK else { return }
         let state = HostedDraftState(
@@ -837,29 +967,20 @@ struct ComposeView: View {
         pendingHostedFiles.removeAll { $0.r2_key == hf.r2_key }
         pendingHostedFilenames.removeValue(forKey: hf.r2_key)
         hostingProgress.removeValue(forKey: hf.r2_key)
-
-        // Keep persisted state in sync. If no files remain, clear the state file
-        // entirely so there's no orphan entry if the user abandons the compose.
         if pendingHostedFiles.isEmpty {
             hostedCEK = nil
             DraftStateStore.default.clearHosted(draftID: draftID)
         } else {
             persistHostedState()
         }
-        // TODO: call uploads_abort for any in-progress multipart upload and
-        // issue a server-side orphan cleanup once a delete-r2-object endpoint
-        // is exposed. Currently the server runs a daily orphan sweep against
-        // R2 keys with no associated hosted_downloads row.
     }
 
     // MARK: - Draft picker
 
     private func loadDraft(_ d: DraftRow) {
-        // Clear hosted state for the previous draft before switching.
         pendingHostedFiles = []
         pendingHostedFilenames = [:]
         hostedCEK = nil
-
         draftID = d.id
         to = d.to_addrs.joined(separator: ", ")
         cc = d.cc_addrs.joined(separator: ", ")

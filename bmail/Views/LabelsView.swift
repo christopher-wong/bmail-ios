@@ -3,68 +3,96 @@ import SwiftUI
 struct LabelsView: View {
     @State private var labels: [MailLabel] = []
     @State private var loading = true
-    @State private var newMailLabel = ""
+    @State private var newLabelName = ""
     @FocusState private var nameFocused: Bool
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                SectionHeader(title: "LABELS")
+        ZStack {
+            Wallpaper()
 
-                HStack(spacing: 8) {
-                    TextField("new label name", text: $newMailLabel)
-                        .font(.mono(.subheadline))
-                        .textInputAutocapitalization(.never)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(Theme.hairline, lineWidth: 1)
-                        )
-                        .focused($nameFocused)
-                        .submitLabel(.done)
-                        .onSubmit { Task { await add() } }
-                    Button("ADD ▸") { Task { await add() } }
-                        .monoButton(prominent: true, disabled: newMailLabel.isEmpty)
-                        .disabled(newMailLabel.isEmpty)
+            Form {
+                // Add new label section
+                Section {
+                    HStack(spacing: DS.Space.s) {
+                        TextField("New label", text: $newLabelName)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .focused($nameFocused)
+                            .submitLabel(.done)
+                            .onSubmit { Task { await add() } }
+
+                        Button {
+                            Task { await add() }
+                        } label: {
+                            Image(systemName: "plus.circle.fill")
+                                .font(.title3)
+                                .foregroundStyle(newLabelName.isEmpty ? DS.Color.inkFaint : .accentColor)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(newLabelName.isEmpty)
+                        .accessibilityLabel("Add label")
+                    }
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                Hairline()
 
-                if loading {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if labels.isEmpty {
-                    EmptyStateView(title: "no labels yet")
-                } else {
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            ForEach(labels) { l in
-                                HStack {
-                                    Text(l.name).font(.mono(13))
-                                    Spacer()
-                                    Button("DELETE") { Task { await del(l) } }
-                                        .monoButton()
+                // Existing labels
+                Section {
+                    if loading {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                                .controlSize(.regular)
+                            Spacer()
+                        }
+                        .listRowBackground(Color.clear)
+                    } else if labels.isEmpty {
+                        DSEmptyState(
+                            systemName: "tag",
+                            title: "No labels yet",
+                            hint: "Add a label above to organize your mail."
+                        )
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets())
+                    } else {
+                        ForEach(labels) { label in
+                            HStack(spacing: DS.Space.m) {
+                                Circle()
+                                    .fill(Color.accentColor)
+                                    .frame(width: DS.Space.s, height: DS.Space.s)
+                                Text(label.name)
+                                    .font(.body)
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                            }
+                            .padding(.vertical, DS.Space.xs)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) {
+                                    Task { await del(label) }
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
                                 }
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 12)
-                                Hairline()
                             }
                         }
                     }
+                } header: {
+                    if !labels.isEmpty {
+                        Text("Your labels")
+                    }
                 }
             }
-            .background(Theme.inverseInk)
-            .task { await load() }
-            .toolbar {
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("Done") { nameFocused = false }
-                        .font(.mono(.footnote, weight: .medium))
-                }
+            .scrollContentBackground(.hidden)
+        }
+        .navigationTitle("Labels")
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") { nameFocused = false }
             }
         }
+        .task { await load() }
     }
+
+    // MARK: - Data
 
     private func load() async {
         loading = true
@@ -77,16 +105,19 @@ struct LabelsView: View {
 
     private func add() async {
         struct Body: Encodable { let name: String }
-        let name = newMailLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = newLabelName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         do {
             let _: MailLabel = try await APIClient.shared.post("/api/labels", Body(name: name))
-            newMailLabel = ""
+            newLabelName = ""
+            nameFocused = false
+            DSHaptics.notifySuccess()
             await load()
         } catch {}
     }
 
     private func del(_ l: MailLabel) async {
+        DSHaptics.impactMedium()
         labels.removeAll { $0.id == l.id }
         _ = try? await APIClient.shared.delete("/api/labels/\(l.id)")
     }

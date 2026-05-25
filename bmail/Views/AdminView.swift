@@ -11,115 +11,80 @@ struct AdminView: View {
     @State private var newAdmin = false
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                SectionHeader(title: "ADMIN")
+        Form {
+            // MARK: New invite
+            Section {
+                TextField("Handle (optional)", text: $newHandle)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
 
-                ScrollView {
-                    VStack(spacing: 0) {
-                        newInviteCard
-                        section("INVITES — PENDING") {
-                            if invites.isEmpty {
-                                placeholder("no pending invites")
-                            } else {
-                                ForEach(invites, id: \.token) { i in
-                                    InviteRow(invite: i)
-                                    Hairline()
-                                }
-                            }
-                        }
-                        section("USERS") {
-                            if users.isEmpty {
-                                placeholder("no users")
-                            } else {
-                                ForEach(users, id: \.id) { u in
-                                    UserRow(user: u)
-                                    Hairline()
-                                }
-                            }
-                        }
-                    }
+                TextField("Address (local part or full)", text: $newLocal)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.emailAddress)
+
+                Toggle("Grant admin role", isOn: $newAdmin)
+                    .tint(Color.accentColor)
+
+                Button("Create invite") {
+                    Task { await createInvite() }
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(Color.accentColor)
+                .disabled(newLocal.isEmpty)
+            } header: {
+                Text("New invite")
             }
-            .background(Theme.inverseInk)
-            .task { await load() }
-        }
-    }
 
-    private var primaryDomain: String { status?.primary_domain ?? "" }
-
-    private var newInviteCard: some View {
-        section("NEW INVITE") {
-            VStack(spacing: 0) {
-                inputRow(label: "handle", text: $newHandle, placeholder: "optional")
-                Hairline()
-                inputRow(label: "address", text: $newLocal, placeholder: "@\(primaryDomain)")
-                Hairline()
-                Toggle(isOn: $newAdmin) {
+            // MARK: Pending invites
+            Section {
+                if loading {
                     HStack {
-                        Text("admin")
-                            .monoLabel()
-                            .frame(width: 100, alignment: .leading)
-                        Text("grant admin role")
-                            .font(.mono(13))
+                        Spacer()
+                        ProgressView()
                         Spacer()
                     }
+                } else if invites.isEmpty {
+                    Text("No pending invites")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(invites, id: \.token) { invite in
+                        InviteRow(invite: invite)
+                    }
                 }
-                .toggleStyle(.switch)
-                .tint(Theme.ink)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 6)
-                Hairline()
-                HStack {
-                    Spacer()
-                    Button("CREATE INVITE ▸") { Task { await createInvite() } }
-                        .monoButton(prominent: true, disabled: newLocal.isEmpty)
-                        .disabled(newLocal.isEmpty)
+            } header: {
+                Text("Pending invites")
+            }
+
+            // MARK: Users
+            Section {
+                if loading {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                } else if users.isEmpty {
+                    Text("No users")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(users, id: \.id) { user in
+                        UserRow(user: user)
+                    }
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
+            } header: {
+                Text("Users")
             }
         }
+        .listStyle(.insetGrouped)
+        .navigationTitle("Admin")
+        .navigationBarTitleDisplayMode(.large)
+        .task { await load() }
     }
 
-    private func inputRow(label: String, text: Binding<String>, placeholder: String) -> some View {
-        HStack(spacing: 0) {
-            Text(label).monoLabel().frame(width: 100, alignment: .leading)
-            TextField(placeholder, text: text)
-                .font(.mono(13))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-    }
+    // MARK: - Data helpers
 
-    @ViewBuilder
-    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text(title)
-                    .font(.mono(11, .medium))
-                    .tracking(1.5)
-                    .foregroundStyle(Theme.mute)
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 16)
-            .padding(.bottom, 8)
-            Hairline()
-            content()
-        }
-    }
-
-    private func placeholder(_ s: String) -> some View {
-        Text(s)
-            .font(.mono(12))
-            .foregroundStyle(Theme.mute)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-    }
+    private var primaryDomain: String { status?.primary_domain ?? "" }
 
     private func load() async {
         loading = true
@@ -150,6 +115,8 @@ struct AdminView: View {
     }
 }
 
+// MARK: - Model types
+
 struct InviteView: Decodable, Sendable {
     let token: String
     let handle: String?
@@ -168,55 +135,68 @@ struct UserView: Decodable, Sendable {
     let addresses: [String]
 }
 
+// MARK: - Row components
+
 private struct InviteRow: View {
     let invite: InviteView
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: DS.Space.xs) {
+            HStack(spacing: DS.Space.s) {
                 Text(invite.handle ?? "(no handle)")
-                    .font(.mono(13, .medium))
+                    .font(.callout.weight(.medium))
+
                 if invite.is_admin {
-                    Text("ADMIN")
-                        .font(.mono(9, .medium))
-                        .tracking(1)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .overlay(Rectangle().stroke(Theme.hairline, lineWidth: 1))
+                    Label("Admin", systemImage: "key.fill")
+                        .labelStyle(.iconOnly)
+                        .font(.caption2)
+                        .padding(.horizontal, DS.Space.s)
+                        .padding(.vertical, 2)
+                        .background(Color.accentColor.opacity(0.12), in: Capsule())
+                        .foregroundStyle(Color.accentColor)
                 }
+
                 Spacer()
+
                 Text(RelativeDate.format(invite.created_at))
-                    .font(.mono(11)).foregroundStyle(Theme.mute)
+                    .font(.caption)
+                    .foregroundStyle(DS.Color.inkFaint)
             }
+
             Text(invite.addresses.joined(separator: ", "))
-                .font(.mono(11))
-                .foregroundStyle(Theme.mute)
+                .font(.dsMono(.footnote))
+                .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.vertical, DS.Space.xs)
     }
 }
 
 private struct UserRow: View {
     let user: UserView
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                Text(user.handle).font(.mono(13, .medium))
+        VStack(alignment: .leading, spacing: DS.Space.xs) {
+            HStack(spacing: DS.Space.s) {
+                Text(user.handle)
+                    .font(.callout.weight(.medium))
+
                 if user.is_admin {
-                    Text("ADMIN")
-                        .font(.mono(9, .medium))
-                        .tracking(1)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .overlay(Rectangle().stroke(Theme.hairline, lineWidth: 1))
+                    Label("Admin", systemImage: "key.fill")
+                        .labelStyle(.iconOnly)
+                        .font(.caption2)
+                        .padding(.horizontal, DS.Space.s)
+                        .padding(.vertical, 2)
+                        .background(Color.accentColor.opacity(0.12), in: Capsule())
+                        .foregroundStyle(Color.accentColor)
                 }
+
                 Spacer()
             }
+
             Text(user.addresses.joined(separator: ", "))
-                .font(.mono(11))
-                .foregroundStyle(Theme.mute)
+                .font(.dsMono(.footnote))
+                .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.vertical, DS.Space.xs)
     }
 }

@@ -16,11 +16,74 @@
 
 import SwiftUI
 
+// MARK: - Shared sender identity card
+
+/// Reusable sender identity card used by HostedView and SecretLinkView gate.
+/// Prominent above-the-fold anti-phishing surface: avatar + display name +
+/// monospaced email (spoofing-obvious) + encryption pill + trust copy.
+struct SenderIdentityCard: View {
+    let displayName: String?
+    let email: String
+    let pillLabel: String
+    var trustCopy: String? = nil
+
+    private var initials: String {
+        if let name = displayName, !name.isEmpty {
+            let parts = name.split(separator: " ")
+            if parts.count >= 2 {
+                return String(parts[0].prefix(1) + parts[1].prefix(1))
+            }
+            return String(name.prefix(2))
+        }
+        return String(email.prefix(2))
+    }
+
+    var body: some View {
+        GlassCard(radius: DS.Radius.sheet) {
+            VStack(spacing: DS.Space.m) {
+                DSAvatar(initials: initials, size: .header)
+
+                VStack(spacing: DS.Space.xs) {
+                    if let name = displayName, !name.isEmpty {
+                        Text(name)
+                            .font(.title2.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    Text(email)
+                        .font(.dsMono(.body))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                }
+
+                DSEncryptionPill(label: pillLabel)
+
+                if let copy = trustCopy {
+                    Text(copy)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, DS.Space.s)
+                }
+            }
+            .padding(DS.Space.xl)
+            .frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal, DS.Space.l)
+    }
+}
+
+// MARK: - HostedView
+
 struct HostedView: View {
     let token: String
     let cek: Data
 
     @Environment(AppModel.self) private var app
+    @Environment(\.dismiss) private var dismiss
     @State private var meta: HostedPublicView?
     @State private var loadError: String?
     @State private var fileStates: [String: FileDownloadState] = [:]    // r2Key → state
@@ -33,12 +96,15 @@ struct HostedView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                SectionHeader(title: "ENCRYPTED DOWNLOAD")
-                content
+        ZStack {
+            Wallpaper()
+            content
+        }
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Close") { dismiss() }
             }
-            .background(Theme.inverseInk)
         }
         .task { await loadMeta() }
     }
@@ -48,240 +114,181 @@ struct HostedView: View {
     @ViewBuilder
     private var content: some View {
         if let err = loadError {
-            errorView(err)
+            errorStateView(err)
         } else if let meta {
             if meta.revoked {
-                statusView(
-                    headline: "files no longer available",
-                    body: "The sender revoked this download link. Ask them to share again if you still need the files."
+                deadStateView(
+                    systemName: "xmark.shield",
+                    title: "Files no longer available",
+                    hint: "The sender revoked this download link. Ask them to share again if you still need the files."
                 )
             } else if meta.expired {
-                statusView(
-                    headline: "link expired",
-                    body: "Hosted download links expire 14 days after they're sent. Ask the sender to share again."
+                deadStateView(
+                    systemName: "clock.badge.xmark",
+                    title: "Link expired",
+                    hint: "Hosted download links expire 14 days after they're sent. Ask the sender to share again."
                 )
             } else {
                 fileListView(meta)
             }
         } else {
-            loadingView
+            loadingStateView
         }
     }
 
-    // MARK: - States
+    // MARK: - Loading
 
-    private var loadingView: some View {
-        VStack(spacing: 16) {
+    private var loadingStateView: some View {
+        VStack(spacing: DS.Space.m) {
             ProgressView()
-            Text("loading…")
-                .font(.mono(.footnote))
-                .foregroundStyle(Theme.mute)
+                .controlSize(.large)
+                .tint(.accentColor)
+            Text("Loading…")
+                .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func errorView(_ message: String) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(message.contains("404") ? "this link does not exist" : message)
-                .font(.mono(.footnote))
-                .foregroundStyle(Theme.ink)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .overlay(Rectangle().stroke(Theme.hairline, lineWidth: 1))
-                .padding(16)
-            Spacer()
-        }
+    // MARK: - Error
+
+    private func errorStateView(_ message: String) -> some View {
+        DSEmptyState(
+            systemName: "exclamationmark.triangle",
+            title: message.contains("404") ? "Link not found" : "Something went wrong",
+            hint: message.contains("404") ? nil : message
+        )
     }
 
-    private func statusView(headline: String, body: String) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(headline)
-                .font(.mono(.title3, weight: .medium))
-                .padding(.horizontal, 16)
-                .padding(.top, 20)
-            Text(body)
-                .font(.mono(.footnote))
-                .foregroundStyle(Theme.mute)
-                .padding(.horizontal, 16)
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+    // MARK: - Dead (revoked / expired)
+
+    private func deadStateView(systemName: String, title: String, hint: String) -> some View {
+        DSEmptyState(systemName: systemName, title: title, hint: hint)
     }
+
+    // MARK: - File list
 
     private func fileListView(_ meta: HostedPublicView) -> some View {
         ScrollView {
-            VStack(spacing: 0) {
-                // Sender identity block — above the fold, anti-phishing posture.
-                senderBlock(meta)
+            VStack(spacing: DS.Space.l) {
+                // 1. Sender identity card — above the fold, anti-phishing posture.
+                SenderIdentityCard(
+                    displayName: meta.sender_name,
+                    email: meta.sender_addr,
+                    pillLabel: "End-to-end encrypted",
+                    trustCopy: "These files were encrypted in their browser. Only you can decrypt them on this device."
+                )
+                .padding(.top, DS.Space.l)
 
-                // E2E callout
-                e2eCallout(meta)
-
-                // File list
-                VStack(spacing: 0) {
-                    let label = "FILES (\(meta.files.count), \(formatBytes(meta.total_bytes)) encrypted)"
-                    Text(label)
-                        .font(.mono(11, .medium))
-                        .tracking(1.5)
-                        .foregroundStyle(Theme.mute)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 16)
-                        .padding(.bottom, 8)
-                    Hairline()
-                    ForEach(meta.files, id: \.r2_key) { file in
-                        fileRow(file)
-                        Hairline()
+                // 2. File list card
+                GlassCard(radius: DS.Radius.card) {
+                    VStack(spacing: 0) {
+                        ForEach(Array(meta.files.enumerated()), id: \.element.r2_key) { index, file in
+                            fileRow(file, expiresAt: meta.expires_at)
+                            if index < meta.files.count - 1 {
+                                Divider()
+                                    .padding(.leading, DS.Space.l)
+                            }
+                        }
                     }
                 }
+                .padding(.horizontal, DS.Space.l)
 
+                // Download count footnote
                 if meta.download_count > 0 {
-                    Text("downloaded \(meta.download_count) time\(meta.download_count == 1 ? "" : "s") so far.")
-                        .font(.mono(10))
-                        .foregroundStyle(Theme.mute)
+                    Text("Downloaded \(meta.download_count) time\(meta.download_count == 1 ? "" : "s") so far.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 12)
-                        .padding(.bottom, 8)
+                        .padding(.horizontal, DS.Space.xl)
                 }
             }
+            .padding(.bottom, DS.Space.xxl)
         }
     }
 
-    // MARK: - Subviews
+    // MARK: - File row
 
-    private func senderBlock(_ meta: HostedPublicView) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("sent by")
-                .font(.mono(10))
-                .tracking(1.0)
-                .foregroundStyle(Theme.mute)
-
-            if let name = meta.sender_name, !name.isEmpty {
-                Text(name)
-                    .font(.mono(.title3, weight: .medium))
-                Text(meta.sender_addr)
-                    .font(.mono(12))
-                    .foregroundStyle(Theme.mute)
-            } else {
-                Text(meta.sender_addr)
-                    .font(.mono(.title3, weight: .medium))
-            }
-
-            if !meta.recipient_addrs.isEmpty {
-                let recipLine: String = {
-                    if meta.recipient_addrs.count == 1 { return meta.recipient_addrs[0] }
-                    return "\(meta.recipient_addrs[0]) +\(meta.recipient_addrs.count - 1) more"
-                }()
-                Group {
-                    Text("to")
-                        .font(.mono(10))
-                        .tracking(1.0)
-                        .foregroundStyle(Theme.mute)
-                        .padding(.top, 6)
-                    Text(recipLine)
-                        .font(.mono(12))
-                }
-            }
-
-            if let subject = meta.subject, !subject.isEmpty {
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text("subject")
-                        .font(.mono(10))
-                        .tracking(1.0)
-                        .foregroundStyle(Theme.mute)
-                    Text(subject)
-                        .font(.mono(12))
-                }
-                .padding(.top, 4)
-            }
-
-            Text(metaTimestampLine(meta))
-                .font(.mono(10))
-                .foregroundStyle(Theme.mute)
-                .padding(.top, 4)
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay(Rectangle().stroke(Theme.hairline, lineWidth: 1))
-        .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .padding(.bottom, 8)
-    }
-
-    private func e2eCallout(_ meta: HostedPublicView) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("You're on bmail's encrypted-download page.")
-                .font(.mono(11, .medium))
-            Text("These files are end-to-end encrypted — the decryption key lives only in your URL (after the #), so our servers can't read your files. Anyone with the full URL can decrypt them, so treat it like a password. If you weren't expecting this from \(meta.sender_name ?? meta.sender_addr), don't download anything.")
-                .font(.mono(10))
-                .foregroundStyle(Theme.mute)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.primary.opacity(0.04))
-        .overlay(Rectangle().stroke(Theme.hairline, lineWidth: 1))
-        .padding(.horizontal, 16)
-        .padding(.bottom, 4)
-    }
-
-    private func fileRow(_ file: HostedFile) -> some View {
+    private func fileRow(_ file: HostedFile, expiresAt: Int64) -> some View {
         let state = fileStates[file.r2_key] ?? .idle
-        return HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(file.filename)
-                    .font(.mono(.subheadline))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text("\(formatBytes(file.plaintext_size)) · \(file.mime)")
-                    .font(.mono(10))
-                    .foregroundStyle(Theme.mute)
-                switch state {
-                case .downloading(let p):
-                    ProgressView(value: p)
-                        .progressViewStyle(.linear)
-                        .tint(Theme.ink)
-                        .padding(.top, 2)
-                    Text("decrypting… \(Int(p * 100))%")
-                        .font(.mono(10))
-                        .foregroundStyle(Theme.mute)
-                case .failed(let msg):
-                    Text(msg)
-                        .font(.mono(10))
-                        .foregroundStyle(.red)
-                case .idle, .done:
-                    EmptyView()
+        return VStack(spacing: DS.Space.xs) {
+            HStack(spacing: DS.Space.m) {
+                Image(systemName: mimeIcon(file.mime))
+                    .font(.title3)
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 32, height: 32)
+                    .symbolRenderingMode(.hierarchical)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(file.filename)
+                        .font(.callout)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Text(fileMeta(file, expiresAt: expiresAt))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
+
+                Spacer(minLength: 0)
+
+                downloadButton(file: file, state: state)
             }
-            Spacer()
-            downloadButton(file: file, state: state)
+
+            // Progress bar — only shown while downloading
+            if case .downloading(let p) = state {
+                ProgressView(value: p)
+                    .progressViewStyle(.linear)
+                    .tint(.accentColor)
+                    .padding(.leading, 48)  // align under filename
+            }
+
+            if case .failed(let msg) = state {
+                Text(msg)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 48)
+            }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.horizontal, DS.Space.l)
+        .padding(.vertical, DS.Space.m)
     }
 
     private func downloadButton(file: HostedFile, state: FileDownloadState) -> some View {
-        let label: String = {
-            switch state {
-            case .idle:              return "DOWNLOAD"
-            case .downloading:       return "…"
-            case .done:              return "AGAIN ▸"
-            case .failed:            return "RETRY"
-            }
-        }()
-        let isIdle: Bool = {
-            if case .idle = state { return true } else { return false }
-        }()
-        let busy: Bool = {
-            if case .downloading = state { return true } else { return false }
-        }()
+        let isBusy: Bool = { if case .downloading = state { return true } else { return false } }()
 
-        return Button(label) {
-            Task { await downloadFile(file) }
+        return Group {
+            switch state {
+            case .idle:
+                Button("Download", systemImage: "arrow.down.circle") {
+                    Task { await downloadFile(file) }
+                }
+                .buttonStyle(.bordered)
+                .tint(.accentColor)
+
+            case .downloading:
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(.accentColor)
+                    .frame(width: 44, height: 32)
+
+            case .done:
+                Button("Again", systemImage: "arrow.counterclockwise.circle") {
+                    Task { await downloadFile(file) }
+                }
+                .buttonStyle(.bordered)
+                .tint(.accentColor)
+
+            case .failed:
+                Button("Retry", systemImage: "arrow.down.circle") {
+                    Task { await downloadFile(file) }
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+            }
         }
-        .monoButton(prominent: isIdle, disabled: busy)
-        .disabled(busy)
+        .disabled(isBusy)
     }
 
     // MARK: - Download logic
@@ -289,7 +296,6 @@ struct HostedView: View {
     private func downloadFile(_ file: HostedFile) async {
         fileStates[file.r2_key] = .downloading(progress: 0)
 
-        // Create a temp file for the plaintext output.
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension(URL(fileURLWithPath: file.filename).pathExtension)
@@ -334,14 +340,13 @@ struct HostedView: View {
             }
 
             fileStates[file.r2_key] = .done(url: tmp)
-
-            // Present system share sheet so the user can save to Files or open in another app.
+            DSHaptics.notifySuccess()
             shareFile(at: tmp, filename: file.filename)
 
         } catch {
             try? FileManager.default.removeItem(at: tmp)
             fileStates[file.r2_key] = .failed(
-                message: (error as? LocalizedError)?.errorDescription ?? "download failed: \(error)"
+                message: (error as? LocalizedError)?.errorDescription ?? "Download failed: \(error)"
             )
         }
     }
@@ -367,16 +372,30 @@ struct HostedView: View {
 
     // MARK: - Helpers
 
-    private func metaTimestampLine(_ meta: HostedPublicView) -> String {
-        let created = Date(timeIntervalSince1970: Double(meta.created_at) / 1000)
-        let expires = Date(timeIntervalSince1970: Double(meta.expires_at) / 1000)
-        let createdStr = created.formatted(date: .abbreviated, time: .shortened)
-        let expiresStr = expires.formatted(date: .abbreviated, time: .omitted)
-        return "\(createdStr) · expires \(expiresStr)"
+    /// File size + optional expiry date sourced from the enclosing HostedPublicView.
+    private func fileMeta(_ file: HostedFile, expiresAt: Int64) -> String {
+        let sizeStr = formatBytes(file.plaintext_size)
+        guard expiresAt > 0 else { return sizeStr }
+        let expires = Date(timeIntervalSince1970: Double(expiresAt) / 1000)
+        return "\(sizeStr) · expires \(expires.formatted(date: .abbreviated, time: .omitted))"
     }
 }
 
 // MARK: - Helpers
+
+/// Map a MIME type to the most representative SF Symbol.
+func mimeIcon(_ mime: String) -> String {
+    let m = mime.lowercased()
+    if m.hasPrefix("image/")       { return "photo.fill" }
+    if m.hasPrefix("video/")       { return "video.fill" }
+    if m.hasPrefix("audio/")       { return "waveform" }
+    if m == "application/pdf"      { return "doc.richtext.fill" }
+    if m.contains("zip") || m.contains("tar") || m.contains("gzip") { return "doc.zipper" }
+    if m.hasPrefix("text/")        { return "doc.text.fill" }
+    if m.contains("spreadsheet") || m.contains("excel") { return "tablecells.fill" }
+    if m.contains("presentation") || m.contains("powerpoint") { return "rectangle.on.rectangle.fill" }
+    return "doc.fill"
+}
 
 private func formatBytes(_ n: Int64) -> String {
     let f = ByteCountFormatter()

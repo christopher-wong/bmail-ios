@@ -1,3 +1,17 @@
+/// Theme.swift — legacy mono-terminal design tokens.
+///
+/// **Migration note:** New code should use the Liquid Glass design system
+/// in `bmail/App/DesignSystem.swift`. This file is preserved for backward
+/// compatibility while existing views are migrated. Do **not** rename or
+/// delete any symbol here until all call sites have been updated.
+///
+/// Mapping to new equivalents:
+/// - `Theme.ink`       → `DS.Color.ink`      / `Color.primary`
+/// - `Theme.mute`      → `DS.Color.inkMuted` / `Color.secondary`
+/// - `Theme.hairline`  → use `.background(.regularMaterial)` + `GlassCard`
+/// - `Font.mono`       → `Font.dsMono(_:weight:)`
+/// - `monoLabel()`     → `DSSectionHeader` for headers; `.foregroundStyle(.secondary)` for body
+/// - `monoButton()`    → `DS`-based button styles (Phase 2)
 import SwiftUI
 #if canImport(UIKit)
 import UIKit

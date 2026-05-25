@@ -69,12 +69,9 @@ struct SecretLinkView: View {
     // MARK: - Body
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                SectionHeader(title: "SECRET MESSAGE")
-                mainContent
-            }
-            .background(Theme.inverseInk)
+        ZStack {
+            Wallpaper()
+            mainContent
         }
         .task { await loadMeta() }
     }
@@ -104,11 +101,12 @@ struct SecretLinkView: View {
     // MARK: - Loading
 
     private var loadingView: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: DS.Space.m) {
             ProgressView()
-            Text("loading…")
-                .font(.mono(.footnote))
-                .foregroundStyle(Theme.mute)
+                .controlSize(.large)
+                .tint(.accentColor)
+            Text("Decrypting…")
+                .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -117,281 +115,320 @@ struct SecretLinkView: View {
 
     private func passwordGateView(_ meta: SecretLinkPublicView) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                // Sender identity block — anti-phishing: show sender before any interaction.
-                senderBlock(meta)
+            VStack(spacing: DS.Space.l) {
+                // Anti-phishing: sender identity above the fold before any input.
+                SenderIdentityCard(
+                    displayName: meta.sender_name,
+                    email: meta.sender_addr,
+                    pillLabel: "Password protected"
+                )
+                .padding(.top, DS.Space.l)
 
-                // Hint block
-                if let hint = meta.hint, !hint.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("HINT")
-                            .font(.mono(10, .medium))
-                            .tracking(1.5)
-                            .foregroundStyle(Theme.mute)
-                        Text(hint)
-                            .font(.mono(.subheadline))
+                // Load error banner (if initial fetch had a recoverable error)
+                if let err = loadError {
+                    Text(err)
+                        .font(.subheadline)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, DS.Space.l)
+                }
+
+                // Password card
+                GlassCard(radius: DS.Radius.card) {
+                    VStack(alignment: .leading, spacing: DS.Space.m) {
+                        // Optional hint
+                        if let hint = meta.hint, !hint.isEmpty {
+                            Text(hint)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        // Password field
+                        SecureField("Password", text: $password)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .padding(DS.Space.m)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.button, style: .continuous))
+                            .onSubmit { Task { await tryUnlock(meta: meta) } }
+
+                        // Attempts warning
+                        if let err = unlockError, case .wrongPassword(let n) = err, let n, n <= 3 {
+                            Text("\(n) attempt\(n == 1 ? "" : "s") left before this link self-destructs.")
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                        } else if let err = unlockError {
+                            Text(unlockErrorText(err))
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                        }
+
+                        // Unlock button
+                        Button {
+                            Task { await tryUnlock(meta: meta) }
+                        } label: {
+                            Group {
+                                if unlocking {
+                                    HStack(spacing: DS.Space.s) {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                            .tint(.white)
+                                        Text("Decrypting…")
+                                    }
+                                } else {
+                                    Text("Unlock")
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.accentColor)
+                        .disabled(unlocking || password.isEmpty)
                     }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .overlay(Rectangle().stroke(Theme.hairline, lineWidth: 1))
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 8)
+                    .padding(DS.Space.l)
                 }
+                .padding(.horizontal, DS.Space.l)
 
-                // Password entry
-                VStack(alignment: .leading, spacing: 10) {
-                    SecureField("password", text: $password)
-                        .font(.mono(.subheadline))
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .overlay(Rectangle().stroke(Theme.hairline, lineWidth: 1))
-                        .onSubmit { Task { await tryUnlock(meta: meta) } }
-
-                    Button(unlocking ? "checking…" : "UNLOCK ▸") {
-                        Task { await tryUnlock(meta: meta) }
-                    }
-                    .monoButton(prominent: true, disabled: unlocking || password.isEmpty)
-                    .disabled(unlocking || password.isEmpty)
-                    .frame(maxWidth: .infinity)
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 12)
-
-                // Error / attempts remaining
-                if let err = unlockError {
-                    unlockErrorView(err)
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 12)
-                }
-
-                // Privacy note
-                Text("Your password never leaves this device. It runs through Argon2id locally; only a derived check value is sent to verify.")
-                    .font(.mono(10))
-                    .foregroundStyle(Theme.mute)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 20)
+                // Privacy microcopy
+                Text("Your password never leaves this device. It's processed locally through Argon2id; only a derived check value is sent to verify.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, DS.Space.xxl)
+                    .padding(.bottom, DS.Space.xxl)
             }
         }
     }
 
-    private func unlockErrorView(_ err: UnlockError) -> some View {
-        let text: String
+    private func unlockErrorText(_ err: UnlockError) -> String {
         switch err {
         case .wrongPassword(let n):
             if let n, n <= 3 {
-                text = "wrong password — \(n) attempt\(n == 1 ? "" : "s") left before this link self-destructs"
+                return "Wrong password — \(n) attempt\(n == 1 ? "" : "s") left before this link self-destructs."
             } else if let n {
-                text = "wrong password (\(n) attempts left)"
+                return "Wrong password (\(n) attempts left)."
             } else {
-                text = "wrong password"
+                return "Wrong password."
             }
         case .other(let msg):
-            text = msg
+            return msg
         }
-        return Text(text)
-            .font(.mono(12))
-            .foregroundStyle(Theme.ink)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .overlay(Rectangle().stroke(Theme.hairline, lineWidth: 1))
     }
 
     // MARK: - Decrypted view
 
     private func decryptedView(_ s: DecodedSecret) -> some View {
         ScrollView {
-            VStack(spacing: 0) {
-                // Header: from, to, subject
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("from")
-                        .font(.mono(10)).tracking(1).foregroundStyle(Theme.mute)
-                    if let name = s.senderName, !name.isEmpty {
-                        Text(name).font(.mono(.title3, weight: .medium))
-                        Text(s.senderAddr).font(.mono(12)).foregroundStyle(Theme.mute)
-                    } else {
-                        Text(s.senderAddr).font(.mono(.title3, weight: .medium))
-                    }
+            VStack(spacing: DS.Space.l) {
+                // Compact sender card — user already proved the password, full card not needed.
+                compactSenderCard(addr: s.senderAddr, name: s.senderName)
+                    .padding(.top, DS.Space.l)
 
-                    if !s.subject.isEmpty {
-                        Text("subject").font(.mono(10)).tracking(1).foregroundStyle(Theme.mute)
-                            .padding(.top, 6)
-                        Text(s.subject).font(.mono(.subheadline))
-                    }
+                // Subject + body card
+                GlassCard(radius: DS.Radius.card) {
+                    VStack(alignment: .leading, spacing: DS.Space.m) {
+                        if !s.subject.isEmpty {
+                            Text(s.subject)
+                                .font(.title2.weight(.semibold))
+                                .foregroundStyle(.primary)
+                        }
 
-                    if let policy = s.policy, let expiresAt = s.expiresAt {
-                        let expiryDate = Date(timeIntervalSince1970: Double(expiresAt) / 1000)
-                        let note: String = {
-                            if policy == "one_time" { return "one-time view — download all attachments now" }
-                            return "expires \(expiryDate.formatted(date: .abbreviated, time: .omitted))"
-                        }()
-                        Text(note)
-                            .font(.mono(10))
-                            .foregroundStyle(Theme.mute)
-                            .padding(.top, 6)
+                        if let policy = s.policy, let expiresAt = s.expiresAt {
+                            let expiryDate = Date(timeIntervalSince1970: Double(expiresAt) / 1000)
+                            let note: String = policy == "one_time"
+                                ? "One-time view — download all attachments now."
+                                : "Expires \(expiryDate.formatted(date: .abbreviated, time: .omitted))."
+                            Text(note)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        if !s.body.isEmpty {
+                            Divider()
+                            Text(s.body)
+                                .font(.body)
+                                .foregroundStyle(.primary)
+                        }
                     }
+                    .padding(DS.Space.l)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(16)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .overlay(Rectangle().stroke(Theme.hairline, lineWidth: 1))
-                .padding(.horizontal, 16)
-                .padding(.top, 16)
-                .padding(.bottom, 8)
-
-                // Body
-                if !s.body.isEmpty {
-                    Text(s.body)
-                        .font(.mono(.subheadline))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(16)
-                }
+                .padding(.horizontal, DS.Space.l)
 
                 // Attachments
                 if !s.attachments.isEmpty {
-                    Hairline().padding(.horizontal, 16)
-                    Text("ATTACHMENTS (\(s.attachments.count))")
-                        .font(.mono(11, .medium))
-                        .tracking(1.5)
-                        .foregroundStyle(Theme.mute)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 16)
-                        .padding(.bottom, 8)
-
-                    VStack(spacing: 0) {
-                        ForEach(s.attachments) { att in
-                            attachmentRow(att, decoded: s)
-                            Hairline()
+                    GlassCard(radius: DS.Radius.card) {
+                        VStack(spacing: 0) {
+                            ForEach(Array(s.attachments.enumerated()), id: \.element.id) { index, att in
+                                attachmentRow(att, decoded: s)
+                                if index < s.attachments.count - 1 {
+                                    Divider()
+                                        .padding(.leading, DS.Space.l)
+                                }
+                            }
                         }
                     }
+                    .padding(.horizontal, DS.Space.l)
                 }
             }
+            .padding(.bottom, DS.Space.xxl)
         }
+    }
+
+    private func compactSenderCard(addr: String, name: String?) -> some View {
+        GlassCard(radius: DS.Radius.card) {
+            HStack(spacing: DS.Space.m) {
+                let initials: String = {
+                    if let n = name, !n.isEmpty {
+                        let parts = n.split(separator: " ")
+                        if parts.count >= 2 { return String(parts[0].prefix(1) + parts[1].prefix(1)) }
+                        return String(n.prefix(2))
+                    }
+                    return String(addr.prefix(2))
+                }()
+
+                DSAvatar(initials: initials, size: .row)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    if let n = name, !n.isEmpty {
+                        Text(n)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                    }
+                    Text(addr)
+                        .font(.dsMono(.footnote))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer(minLength: 0)
+
+                DSEncryptionPill(label: "Decrypted")
+            }
+            .padding(DS.Space.m)
+        }
+        .padding(.horizontal, DS.Space.l)
     }
 
     private func attachmentRow(_ att: AttachmentMeta, decoded: DecodedSecret) -> some View {
         let state = attStates[att.r2Key] ?? .idle
-        return HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(att.filename)
-                    .font(.mono(.subheadline))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text("\(formatBytes(att.plaintextSize)) · \(att.mime)")
-                    .font(.mono(10))
-                    .foregroundStyle(Theme.mute)
-                switch state {
-                case .downloading(let p):
-                    ProgressView(value: p)
-                        .progressViewStyle(.linear)
-                        .tint(Theme.ink)
-                        .padding(.top, 2)
-                    Text("decrypting… \(Int(p * 100))%")
-                        .font(.mono(10))
-                        .foregroundStyle(Theme.mute)
-                case .failed(let msg):
-                    Text(msg).font(.mono(10)).foregroundStyle(.red)
-                case .idle, .done:
-                    EmptyView()
+        let isBusy: Bool = { if case .downloading = state { return true } else { return false } }()
+
+        return VStack(spacing: DS.Space.xs) {
+            HStack(spacing: DS.Space.m) {
+                Image(systemName: mimeIcon(att.mime))
+                    .font(.title3)
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 32, height: 32)
+                    .symbolRenderingMode(.hierarchical)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(att.filename)
+                        .font(.callout)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(formatBytes(att.plaintextSize))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
+
+                Spacer(minLength: 0)
+
+                attDownloadButton(att: att, state: state, decoded: decoded)
             }
-            Spacer()
-            let isBusy: Bool = { if case .downloading = state { return true } else { return false } }()
-            let label: String = {
-                switch state {
-                case .idle:        return "DOWNLOAD"
-                case .downloading: return "…"
-                case .done:        return "AGAIN ▸"
-                case .failed:      return "RETRY"
-                }
-            }()
-            let isIdle: Bool = { if case .idle = state { return true } else { return false } }()
-            Button(label) { Task { await downloadAttachment(att, decoded: decoded) } }
-                .monoButton(prominent: isIdle, disabled: isBusy)
-                .disabled(isBusy)
+
+            if case .downloading(let p) = state {
+                ProgressView(value: p)
+                    .progressViewStyle(.linear)
+                    .tint(.accentColor)
+                    .padding(.leading, 48)
+            }
+
+            if case .failed(let msg) = state {
+                Text(msg)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 48)
+            }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.horizontal, DS.Space.l)
+        .padding(.vertical, DS.Space.m)
+        .disabled(isBusy)
+    }
+
+    @ViewBuilder
+    private func attDownloadButton(att: AttachmentMeta, state: AttDownloadState, decoded: DecodedSecret) -> some View {
+        switch state {
+        case .idle:
+            Button("Download", systemImage: "arrow.down.circle") {
+                Task { await downloadAttachment(att, decoded: decoded) }
+            }
+            .buttonStyle(.bordered)
+            .tint(.accentColor)
+        case .downloading:
+            ProgressView()
+                .controlSize(.small)
+                .tint(.accentColor)
+                .frame(width: 44, height: 32)
+        case .done:
+            Button("Again", systemImage: "arrow.counterclockwise.circle") {
+                Task { await downloadAttachment(att, decoded: decoded) }
+            }
+            .buttonStyle(.bordered)
+            .tint(.accentColor)
+        case .failed:
+            Button("Retry", systemImage: "arrow.down.circle") {
+                Task { await downloadAttachment(att, decoded: decoded) }
+            }
+            .buttonStyle(.bordered)
+            .tint(.red)
+        }
     }
 
     // MARK: - Dead screens
 
     private func deadView(_ reason: DeadReason) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("secret message")
-                .font(.mono(.title3, weight: .medium))
-                .padding(.horizontal, 16)
-                .padding(.top, 20)
-
+        Group {
             switch reason {
             case .selfDestructed:
-                Text("This link self-destructed after too many failed unlock attempts. The content has been permanently deleted from the server.")
-                    .font(.mono(.footnote))
-                    .foregroundStyle(Theme.ink)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .overlay(Rectangle().stroke(Theme.hairline, lineWidth: 1))
-                    .padding(.horizontal, 16)
-                Text("Ask the sender to share a new link if you still need this content.")
-                    .font(.mono(10))
-                    .foregroundStyle(Theme.mute)
-                    .padding(.horizontal, 16)
+                DSEmptyState(
+                    systemName: "flame",
+                    title: "This link has self-destructed",
+                    hint: "Too many failed attempts. The content has been deleted."
+                )
+                // Tint the glyph red via overlay — DSEmptyState uses inkFaint which we override.
+                .overlay(alignment: .top) {
+                    Image(systemName: "flame")
+                        .font(.system(size: 52, weight: .thin))
+                        .foregroundStyle(.red)
+                        .symbolRenderingMode(.hierarchical)
+                        .padding(.top, DS.Space.xxl)
+                }
 
             case .revoked:
-                Text("This link was revoked by the sender or already used (one-time view).")
-                    .font(.mono(.footnote))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .overlay(Rectangle().stroke(Theme.hairline, lineWidth: 1))
-                    .padding(.horizontal, 16)
+                DSEmptyState(
+                    systemName: "xmark.shield",
+                    title: "This link was revoked",
+                    hint: "The sender revoked this link. Ask them to share a new one if you still need the content."
+                )
 
             case .expired:
-                Text("This link has expired.")
-                    .font(.mono(.footnote))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .overlay(Rectangle().stroke(Theme.hairline, lineWidth: 1))
-                    .padding(.horizontal, 16)
+                DSEmptyState(
+                    systemName: "clock.badge.xmark",
+                    title: "This link has expired",
+                    hint: "The link passed its expiry time. Ask the sender to share a new one."
+                )
 
             case .notFound:
-                Text("This link does not exist.")
-                    .font(.mono(.footnote))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .overlay(Rectangle().stroke(Theme.hairline, lineWidth: 1))
-                    .padding(.horizontal, 16)
-            }
-
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    // MARK: - Sender block
-
-    private func senderBlock(_ meta: SecretLinkPublicView) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("secret message from")
-                .font(.mono(10)).tracking(1).foregroundStyle(Theme.mute)
-            if let name = meta.sender_name, !name.isEmpty {
-                Text(name).font(.mono(.title3, weight: .medium))
-                Text(meta.sender_addr).font(.mono(12)).foregroundStyle(Theme.mute)
-            } else {
-                Text(meta.sender_addr).font(.mono(.title3, weight: .medium))
+                DSEmptyState(
+                    systemName: "questionmark.folder",
+                    title: "Link not found",
+                    hint: "Double-check the URL and try again."
+                )
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay(Rectangle().stroke(Theme.hairline, lineWidth: 1))
-        .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .padding(.bottom, 8)
     }
 
     // MARK: - Load
@@ -446,12 +483,12 @@ struct SecretLinkView: View {
             guard let paramsData = meta.kdf_params.data(using: .utf8),
                   let params = try? JSONDecoder().decode(ArgonParams.self, from: paramsData)
             else {
-                unlockError = .other("invalid KDF params from server")
+                unlockError = .other("Invalid KDF params from server.")
                 return
             }
 
             guard let saltData = Data(b64u: meta.argon_salt_b64) else {
-                unlockError = .other("invalid salt encoding")
+                unlockError = .other("Invalid salt encoding.")
                 return
             }
 
@@ -466,7 +503,7 @@ struct SecretLinkView: View {
 
             // Unwrap CEK.
             guard let wrappedCEKData = Data(b64u: resp.password_wrap_b64) else {
-                unlockError = .other("invalid wrapped CEK encoding")
+                unlockError = .other("Invalid wrapped CEK encoding.")
                 return
             }
             let cekData = try SecretLinkCrypto.unwrapCEK(wrappedCEKData, wrapKey: kdf.wrapKey)
@@ -484,14 +521,13 @@ struct SecretLinkView: View {
                   let bodyData = try? SecretLinkCrypto.decryptWithCEK(bodyCTData, cek: cekData),
                   let bodyText = String(data: bodyData, encoding: .utf8)
             else {
-                unlockError = .other("failed to decrypt message body")
+                unlockError = .other("Failed to decrypt message body.")
                 return
             }
 
             // Decrypt attachment filenames. The web encrypts filenames in the
             // single-chunk framed format (ChunkedAEAD) since uploadAttachmentChunked.
             // Try framed first, fall back to single-blob for legacy attachments.
-            // resp.attachments is [OpenAPIObjectContainer] — each .value is [String: (any Sendable)?].
             let attachments: [AttachmentMeta] = resp.attachments.compactMap { raw in
                 let dict = raw.value
                 guard let r2Key = dict["r2_key"] as? String, !r2Key.isEmpty else { return nil }
@@ -505,10 +541,8 @@ struct SecretLinkView: View {
                 guard let fctData = Data(b64u: fctB64) else { return nil }
 
                 let filename: String = {
-                    // Try framed format first (new uploads use ChunkedAEAD for filenames).
                     if let (pt, _) = try? ChunkedAEAD.decryptChunk(cek: cekData, framedChunk: fctData, chunkIndex: 0),
                        let s = String(data: pt, encoding: .utf8) { return s }
-                    // Legacy single-blob fallback.
                     if let pt = try? SecretLinkCrypto.decryptWithCEK(fctData, cek: cekData),
                        let s = String(data: pt, encoding: .utf8) { return s }
                     return "attachment"
@@ -613,24 +647,25 @@ struct SecretLinkView: View {
             }
 
             attStates[att.r2Key] = .done(url: tmp)
+            DSHaptics.notifySuccess()
             shareFile(at: tmp, filename: att.filename)
 
         } catch let secretErr as SecretLinkError {
             try? FileManager.default.removeItem(at: tmp)
             switch secretErr {
             case .selfDestructed:
-                attStates[att.r2Key] = .failed(message: "link self-destructed")
+                attStates[att.r2Key] = .failed(message: "Link self-destructed.")
             case .revoked:
-                attStates[att.r2Key] = .failed(message: "link revoked or expired")
+                attStates[att.r2Key] = .failed(message: "Link revoked or expired.")
             default:
                 attStates[att.r2Key] = .failed(
-                    message: secretErr.errorDescription ?? "download failed"
+                    message: secretErr.errorDescription ?? "Download failed."
                 )
             }
         } catch {
             try? FileManager.default.removeItem(at: tmp)
             attStates[att.r2Key] = .failed(
-                message: (error as? LocalizedError)?.errorDescription ?? "download failed"
+                message: (error as? LocalizedError)?.errorDescription ?? "Download failed."
             )
         }
     }
