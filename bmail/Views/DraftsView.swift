@@ -8,6 +8,9 @@ struct DraftsView: View {
     @State private var resumingDraft: DraftRow?
     @State private var unsubscribe: (() -> Void)?
 
+    private let net = NetworkMonitor.shared
+    private let cache = MailCache.default
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -74,13 +77,44 @@ struct DraftsView: View {
 
     // MARK: - Data
 
+    /// A draft is "empty" if it has no recipient, no subject, and no body.
+    /// We don't list those — they're usually compose-and-abandon residue —
+    /// and we silently delete them server-side so they don't reappear.
+    private static func isEmpty(_ d: DraftRow) -> Bool {
+        let noRecipient = d.to_addrs.isEmpty && d.cc_addrs.isEmpty && d.bcc_addrs.isEmpty
+        let noSubject = (d.subject_ct_b64?.isEmpty ?? true)
+        let noBody = (d.body_ct_b64?.isEmpty ?? true)
+        return noRecipient && noSubject && noBody
+    }
+
     private func load() async {
-        loading = true
+        // Seed from cache so users see something instantly, and offline still
+        // renders a list.
+        let cached = cache.loadDrafts()
+        if !cached.isEmpty {
+            drafts = cached.filter { !Self.isEmpty($0) }
+            loading = false
+            await decryptSubjects(drafts)
+        }
+
+        guard net.isOnline else {
+            loading = false
+            return
+        }
+
+        loading = drafts.isEmpty
         do {
             let rows: [DraftRow] = try await APIClient.shared.get("/api/drafts")
-            drafts = rows
+            let kept = rows.filter { !Self.isEmpty($0) }
+            drafts = kept
+            cache.saveDrafts(kept)
             loading = false
-            await decryptSubjects(rows)
+            await decryptSubjects(kept)
+            // Best-effort cleanup of empty server-side drafts.
+            let empties = rows.filter(Self.isEmpty)
+            for d in empties {
+                _ = try? await APIClient.shared.delete("/api/drafts/\(d.id)")
+            }
         } catch {
             loading = false
         }
@@ -98,6 +132,7 @@ struct DraftsView: View {
 
     private func discard(_ id: String) {
         drafts.removeAll { $0.id == id }
+        cache.saveDrafts(drafts)
         Task {
             _ = try? await APIClient.shared.delete("/api/drafts/\(id)")
         }

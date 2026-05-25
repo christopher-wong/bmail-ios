@@ -77,10 +77,24 @@ struct SentView: View {
     // MARK: - Data
 
     private func load() async {
-        loading = true
+        let cached = MailCache.default.loadThreads(.sentThreads)
+        if !cached.isEmpty {
+            threads = cached
+            loading = false
+            await decryptSubjects(cached)
+        } else {
+            loading = true
+        }
+
+        guard NetworkMonitor.shared.isOnline else {
+            loading = false
+            return
+        }
+
         do {
             let rows: [ThreadRow] = try await APIClient.shared.get("/api/threads?limit=100&outbound_only=1")
             threads = rows
+            MailCache.default.saveThreads(rows, scope: .sentThreads)
             loading = false
             await decryptSubjects(rows)
         } catch {
