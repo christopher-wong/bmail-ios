@@ -61,6 +61,7 @@ struct MessageRow: Decodable, Identifiable, Sendable {
     let snippet_ct_b64: String?
     let subject_ct_b64: String
     let body_ct_b64: String
+    let body_html_ct_b64: String?
     let size_bytes: Int
     let labels: [String]
 }

@@ -17,6 +17,7 @@ struct ThreadView: View {
     struct DecryptedMessage {
         var subject: String?
         var body: String?
+        var bodyHTML: String?
     }
 
     struct DecodedAttachment: Identifiable, Hashable {
@@ -238,6 +239,9 @@ struct ThreadView: View {
             if let blob = Data(b64u: m.body_ct_b64) {
                 d.body = try? Crypto.openSealedString(blob, priv: priv)
             }
+            if let ct = m.body_html_ct_b64, let blob = Data(b64u: ct) {
+                d.bodyHTML = try? Crypto.openSealedString(blob, priv: priv)
+            }
             out[m.id] = d
         }
         decrypted = out
@@ -412,7 +416,9 @@ private struct MessageCard: View {
             }
 
             // MARK: Body
-            if let body = decrypted?.body, !body.isEmpty {
+            if let html = decrypted?.bodyHTML, !html.isEmpty {
+                HTMLBodyView(html: html)
+            } else if let body = decrypted?.body, !body.isEmpty {
                 Text(body)
                     .font(.body)
                     .foregroundStyle(.primary)
