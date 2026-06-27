@@ -84,6 +84,16 @@ struct ComposeView: View {
 
     var addresses: [String] { app.me?.addresses ?? [] }
 
+    /// In-reply-to id (nil for new messages and forwards). Optional chaining
+    /// already flattens `messageId`'s own optionality.
+    private var inReplyToID: String? { reply?.messageId }
+
+    private var composeTitle: String {
+        guard let r = reply else { return "New message" }
+        if r.isForward { return "Forward" }
+        return r.ccAddrs.isEmpty ? "Reply" : "Reply all"
+    }
+
     private var hasDraftContent: Bool {
         !to.isEmpty || !subject.isEmpty || !bodyText.isEmpty
     }
@@ -133,7 +143,7 @@ struct ComposeView: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .background(.clear)
-            .navigationTitle(reply != nil ? "Reply" : "New message")
+            .navigationTitle(composeTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -613,7 +623,11 @@ struct ComposeView: View {
         if from.isEmpty, let a = addresses.first { from = a }
         if let r = reply, to.isEmpty {
             to = r.toAddrs.joined(separator: ", ")
+            cc = r.ccAddrs.joined(separator: ", ")
             subject = r.subject
+            if bodyText.isEmpty, !r.bodyPrefill.isEmpty {
+                bodyText = r.bodyPrefill
+            }
         }
         if let d = resumeDraft, draftID != d.id {
             draftID = d.id
@@ -673,7 +687,7 @@ struct ComposeView: View {
                 (try Crypto.sealToSelf(Data(bodyText.utf8), pub: pub)).b64u
             let req = DraftSaveReq(
                 id: draftID,
-                in_reply_to_message_id: reply?.messageId,
+                in_reply_to_message_id: inReplyToID,
                 to_addrs: splitAddrs(to),
                 cc_addrs: splitAddrs(cc),
                 bcc_addrs: splitAddrs(bcc),
@@ -769,7 +783,7 @@ struct ComposeView: View {
                 subject: subject.isEmpty ? "(secret message)" : subject,
                 text: plainBody,
                 html: nil,
-                in_reply_to: reply?.messageId,
+                in_reply_to: inReplyToID,
                 references: nil,
                 attachments: []
             )
@@ -811,7 +825,7 @@ struct ComposeView: View {
                 subject: subject,
                 text: finalBodyText,
                 html: nil,
-                in_reply_to: reply?.messageId,
+                in_reply_to: inReplyToID,
                 references: nil,
                 attachments: attachments.map {
                     AttachmentRef(

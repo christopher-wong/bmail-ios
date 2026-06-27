@@ -11,6 +11,10 @@ struct ThreadView: View {
     @State private var loading = true
     @State private var loadError: String?
     @State private var replyState: ReplyState?
+    @State private var expandedIDs: Set<String> = []
+    /// Last message id we auto-expanded, so realtime reloads only auto-expand a
+    /// genuinely new latest message rather than fighting the user's toggles.
+    @State private var lastExpandedAnchor: String?
     @State private var shareURL: URL?
     @State private var unsubscribe: (() -> Void)?
 
@@ -18,6 +22,7 @@ struct ThreadView: View {
         var subject: String?
         var body: String?
         var bodyHTML: String?
+        var snippet: String?
     }
 
     struct DecodedAttachment: Identifiable, Hashable {
@@ -29,9 +34,13 @@ struct ThreadView: View {
 
     struct ReplyState: Identifiable {
         let id = UUID()
-        let messageId: String
+        /// In-reply-to message id. Nil for a forward (a fresh message).
+        let messageId: String?
         let toAddrs: [String]
+        let ccAddrs: [String]
         let subject: String
+        var bodyPrefill: String = ""
+        var isForward: Bool = false
     }
 
     // MARK: - Navigation title
@@ -71,7 +80,10 @@ struct ThreadView: View {
         // Hide the parent TabView's tab bar while reading a thread so the
         // bottom toolbar (Archive / Move / Trash / Reply) isn't drawn under it.
         .toolbar(.hidden, for: .tabBar)
-        .task { await load() }
+        .task {
+            await app.loadImageSettingsIfNeeded()
+            await load()
+        }
         .sheet(item: $replyState) { rs in
             ComposeView(reply: rs)
                 .presentationDetents([.medium, .large])
@@ -101,10 +113,36 @@ struct ThreadView: View {
                         message: m,
                         decrypted: decrypted[m.id],
                         attachments: attachmentsByMessage[m.id] ?? [],
-                        onReply: { startReply(to: m) },
+                        isExpanded: expandedIDs.contains(m.id),
+                        canReplyAll: canReplyAll(m),
+                        onToggleExpand: { toggleExpand(m) },
+                        onReply: { startReply(to: m, all: false) },
+                        onReplyAll: { startReply(to: m, all: true) },
                         onDownload: { att in await downloadAndShare(att, on: m) }
                     )
                     .contextMenu {
+                        Button {
+                            startReply(to: m, all: false)
+                        } label: {
+                            Label("Reply", systemImage: "arrowshape.turn.up.left")
+                        }
+
+                        if canReplyAll(m) {
+                            Button {
+                                startReply(to: m, all: true)
+                            } label: {
+                                Label("Reply all", systemImage: "arrowshape.turn.up.left.2")
+                            }
+                        }
+
+                        Button {
+                            startForward(m)
+                        } label: {
+                            Label("Forward", systemImage: "arrowshape.turn.up.right")
+                        }
+
+                        Divider()
+
                         Button {
                             Task { await toggleStarred(m) }
                         } label: {
@@ -195,23 +233,139 @@ struct ThreadView: View {
 
             Spacer()
 
-            Button("Reply", systemImage: "arrowshape.turn.up.left.fill") {
-                if let last = messages.last { startReply(to: last) }
+            if let last = messages.last {
+                Menu {
+                    Button {
+                        startReply(to: last, all: false)
+                    } label: {
+                        Label("Reply", systemImage: "arrowshape.turn.up.left")
+                    }
+                    if canReplyAll(last) {
+                        Button {
+                            startReply(to: last, all: true)
+                        } label: {
+                            Label("Reply all", systemImage: "arrowshape.turn.up.left.2")
+                        }
+                    }
+                    Button {
+                        startForward(last)
+                    } label: {
+                        Label("Forward", systemImage: "arrowshape.turn.up.right")
+                    }
+                } label: {
+                    Label("Reply", systemImage: "arrowshape.turn.up.left.fill")
+                } primaryAction: {
+                    startReply(to: last, all: false)
+                }
+                .buttonStyle(.borderedProminent)
             }
-            .buttonStyle(.borderedProminent)
         }
     }
 
     // MARK: - Actions
 
-    private func startReply(to m: MessageRow) {
+    private func toggleExpand(_ m: MessageRow) {
+        withAnimation(.snappy(duration: 0.22)) {
+            if expandedIDs.contains(m.id) {
+                expandedIDs.remove(m.id)
+            } else {
+                expandedIDs.insert(m.id)
+            }
+        }
+    }
+
+    private var myAddresses: Set<String> {
+        Set((app.me?.addresses ?? []).map { canonicalAddr($0) })
+    }
+
+    /// Reply-all is only meaningful when there's more than one other party
+    /// besides me across From / To / Cc.
+    private func canReplyAll(_ m: MessageRow) -> Bool {
+        var others = Set<String>()
+        others.insert(canonicalAddr(m.from_addr))
+        for a in m.to_addrs + m.cc_addrs { others.insert(canonicalAddr(a)) }
+        others.subtract(myAddresses)
+        others.remove("")
+        return others.count > 1
+    }
+
+    private func startReply(to m: MessageRow, all: Bool) {
         let subj = decrypted[m.id]?.subject ?? ""
         let prefix = subj.lowercased().hasPrefix("re:") ? "" : "Re: "
+        let mine = myAddresses
+        let iSentThis = mine.contains(canonicalAddr(m.from_addr))
+
+        var to: [String]
+        var cc: [String] = []
+        if iSentThis {
+            // Replying to my own message keeps the original audience.
+            to = m.to_addrs
+            if all { cc = m.cc_addrs }
+        } else {
+            to = [m.from_addr]
+            if all {
+                to += m.to_addrs
+                cc = m.cc_addrs
+            }
+        }
+
+        // Drop my own addresses, de-duplicate case-insensitively, and never
+        // repeat a To recipient in Cc.
+        to = dedupeAddrs(to, excluding: mine)
+        cc = dedupeAddrs(cc, excluding: mine.union(to.map { canonicalAddr($0) }))
+
         replyState = ReplyState(
             messageId: m.message_id ?? m.id,
-            toAddrs: [m.from_addr],
+            toAddrs: to,
+            ccAddrs: all ? cc : [],
             subject: prefix + subj
         )
+    }
+
+    private func startForward(_ m: MessageRow) {
+        let d = decrypted[m.id]
+        let subj = d?.subject ?? ""
+        let prefix = subj.lowercased().hasPrefix("fwd:") ? "" : "Fwd: "
+        let bodyText: String = {
+            if let b = d?.body, !b.isEmpty { return b.looksLikeHTML ? b.strippingHTML : b }
+            if let h = d?.bodyHTML, !h.isEmpty { return h.strippingHTML }
+            return ""
+        }()
+        var quoted = "\n\n---------- Forwarded message ----------\n"
+        quoted += "From: \(m.from_addr)\n"
+        if !m.to_addrs.isEmpty { quoted += "To: \(m.to_addrs.joined(separator: ", "))\n" }
+        if !subj.isEmpty { quoted += "Subject: \(subj)\n" }
+        quoted += "\n" + bodyText
+        replyState = ReplyState(
+            messageId: nil,
+            toAddrs: [],
+            ccAddrs: [],
+            subject: prefix + subj,
+            bodyPrefill: quoted,
+            isForward: true
+        )
+    }
+
+    /// Lowercased bare email, unwrapping a `Name <email>` form for comparison.
+    private func canonicalAddr(_ raw: String) -> String {
+        var s = raw
+        if let lt = s.firstIndex(of: "<"), let gt = s.firstIndex(of: ">"), lt < gt {
+            s = String(s[s.index(after: lt)..<gt])
+        }
+        return s.trimmingCharacters(in: .whitespaces).lowercased()
+    }
+
+    private func dedupeAddrs(_ xs: [String], excluding: Set<String>) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for x in xs {
+            let trimmed = x.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { continue }
+            let c = canonicalAddr(trimmed)
+            if excluding.contains(c) { continue }
+            if seen.insert(c).inserted { out.append(trimmed) }
+        }
+        return out
     }
 
     // MARK: - Data
@@ -222,6 +376,13 @@ struct ThreadView: View {
         do {
             let ms: [MessageRow] = try await APIClient.shared.get("/api/threads/\(threadID)")
             messages = ms
+            // Expand the latest message; older ones stay collapsed. Re-runs on
+            // realtime reloads expand a newly-arrived latest message too, while
+            // preserving the user's manual toggles on existing messages.
+            if let last = ms.last, last.id != lastExpandedAnchor {
+                expandedIDs.insert(last.id)
+                lastExpandedAnchor = last.id
+            }
             loading = false
             await decrypt(ms)
             await loadAttachments(ms)
@@ -244,6 +405,9 @@ struct ThreadView: View {
             }
             if let ct = m.body_html_ct_b64, let blob = Data(b64u: ct) {
                 d.bodyHTML = try? Crypto.openSealedString(blob, priv: priv)
+            }
+            if let ct = m.snippet_ct_b64, let blob = Data(b64u: ct) {
+                d.snippet = (try? Crypto.openSealedString(blob, priv: priv))?.strippingHTML
             }
             out[m.id] = d
         }
@@ -370,18 +534,64 @@ private struct MessageCard: View {
     let message: MessageRow
     let decrypted: ThreadView.DecryptedMessage?
     let attachments: [ThreadView.DecodedAttachment]
+    let isExpanded: Bool
+    let canReplyAll: Bool
+    let onToggleExpand: () -> Void
     let onReply: () -> Void
+    let onReplyAll: () -> Void
     let onDownload: (ThreadView.DecodedAttachment) async -> Void
 
     @State private var downloading: Set<String> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.m) {
+            if isExpanded {
+                expandedContent
+            } else {
+                collapsedContent
+            }
+        }
+        .padding(DS.Space.l)
+        .glassCard(radius: DS.Radius.card)
+        .contentShape(Rectangle())
+    }
 
-            // MARK: Encryption indicator
-            DSEncryptionPill()
+    // MARK: - Collapsed
 
-            // MARK: Sender header
+    private var collapsedContent: some View {
+        Button(action: onToggleExpand) {
+            HStack(alignment: .center, spacing: DS.Space.m) {
+                DSAvatar(initials: initials(from: message.from_addr), size: .row)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(message.from_addr)
+                        .font(.callout.weight(message.read ? .regular : .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    Text(previewText)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+
+                Spacer(minLength: DS.Space.s)
+
+                trailingMeta
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Expanded
+
+    @ViewBuilder
+    private var expandedContent: some View {
+        DSEncryptionPill()
+
+        // Sender header — tap to collapse.
+        Button(action: onToggleExpand) {
             HStack(alignment: .top, spacing: DS.Space.m) {
                 DSAvatar(initials: initials(from: message.from_addr), size: .row)
 
@@ -398,63 +608,118 @@ private struct MessageCard: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
+
+                    if !message.cc_addrs.isEmpty {
+                        Text("Cc \(message.cc_addrs.joined(separator: ", "))")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
 
-                Spacer(minLength: 0)
+                Spacer(minLength: DS.Space.s)
 
-                Text(RelativeDate.format(
-                    message.received_at == 0 ? message.sent_at : message.received_at
-                ))
-                .font(.footnote.monospacedDigit())
-                .foregroundStyle(DS.Color.inkFaint)
+                trailingMeta
             }
+        }
+        .buttonStyle(.plain)
 
-            Divider()
+        Divider()
 
-            // MARK: Subject
-            if let subj = decrypted?.subject, !subj.isEmpty {
-                Text(subj)
-                    .font(.headline)
-                    .foregroundStyle(.primary)
+        // MARK: Subject
+        if let subj = decrypted?.subject, !subj.isEmpty {
+            Text(subj)
+                .font(.headline)
+                .foregroundStyle(.primary)
+        }
+
+        // MARK: Body
+        bodyView
+
+        // MARK: Attachments
+        if !attachments.isEmpty {
+            VStack(alignment: .leading, spacing: DS.Space.xs) {
+                Text("Attachments")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(DS.Color.inkFaint)
+                    .textCase(nil)
+
+                ForEach(attachments) { att in
+                    attachmentChip(att)
+                }
             }
+            .padding(.top, DS.Space.xs)
+        }
 
-            // MARK: Body
-            if let html = decrypted?.bodyHTML, !html.isEmpty {
-                HTMLBodyView(html: html)
-            } else if let body = decrypted?.body, !body.isEmpty {
+        // MARK: Reply actions
+        HStack(spacing: DS.Space.s) {
+            Spacer()
+            if canReplyAll {
+                Button("Reply all", systemImage: "arrowshape.turn.up.left.2", action: onReplyAll)
+                    .buttonStyle(.bordered)
+                    .tint(.accentColor)
+            }
+            Button("Reply", systemImage: "arrowshape.turn.up.left.fill", action: onReply)
+                .buttonStyle(.bordered)
+                .tint(.accentColor)
+        }
+        .padding(.top, DS.Space.xs)
+    }
+
+    // MARK: - Body (renders HTML even when it lands in the plain-text field)
+
+    @ViewBuilder
+    private var bodyView: some View {
+        if let html = decrypted?.bodyHTML, !html.isEmpty {
+            MessageBodyView(html: html, senderDomain: message.from_addr.emailHostDomain)
+        } else if let body = decrypted?.body, !body.isEmpty {
+            if body.looksLikeHTML {
+                MessageBodyView(html: body, senderDomain: message.from_addr.emailHostDomain)
+            } else {
                 Text(body)
                     .font(.body)
                     .foregroundStyle(.primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
             }
-
-            // MARK: Attachments
-            if !attachments.isEmpty {
-                VStack(alignment: .leading, spacing: DS.Space.xs) {
-                    Text("Attachments")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(DS.Color.inkFaint)
-                        .textCase(nil)
-
-                    ForEach(attachments) { att in
-                        attachmentChip(att)
-                    }
-                }
-                .padding(.top, DS.Space.xs)
-            }
-
-            // MARK: Reply button
-            HStack {
-                Spacer()
-                Button("Reply", systemImage: "arrowshape.turn.up.left.fill", action: onReply)
-                    .buttonStyle(.bordered)
-                    .tint(.accentColor)
-            }
-            .padding(.top, DS.Space.xs)
         }
-        .padding(DS.Space.l)
-        .glassCard(radius: DS.Radius.card)
+    }
+
+    // MARK: - Shared bits
+
+    private var trailingMeta: some View {
+        HStack(spacing: DS.Space.xs) {
+            if message.starred {
+                Image(systemName: "star.fill")
+                    .font(.caption2)
+                    .foregroundStyle(Color.accentColor)
+            }
+            if !attachments.isEmpty {
+                Image(systemName: "paperclip")
+                    .font(.caption2)
+                    .foregroundStyle(DS.Color.inkFaint)
+            }
+            Text(RelativeDate.format(
+                message.received_at == 0 ? message.sent_at : message.received_at
+            ))
+            .font(.footnote.monospacedDigit())
+            .foregroundStyle(DS.Color.inkFaint)
+
+            Image(systemName: "chevron.down")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(DS.Color.inkFaint)
+                .rotationEffect(.degrees(isExpanded ? 0 : -90))
+        }
+    }
+
+    /// One-line preview for the collapsed state: server snippet first, then a
+    /// stripped-down version of whatever body we have.
+    private var previewText: String {
+        if let s = decrypted?.snippet, !s.isEmpty { return s }
+        if let b = decrypted?.body, !b.isEmpty { return b.strippingHTML }
+        if let h = decrypted?.bodyHTML, !h.isEmpty { return h.strippingHTML }
+        return "(no preview)"
     }
 
     private func attachmentChip(_ att: ThreadView.DecodedAttachment) -> some View {

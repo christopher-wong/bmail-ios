@@ -120,9 +120,6 @@
 				1E8F67982FC15F3900CAC74C /* bmail */,
 			);
 			name = bmail;
-			packagePlugins = (
-				A1B2C3D4E5F60005A1B2C3D4 /* OpenAPIGenerator */,
-			);
 			packageProductDependencies = (
 				323E44199EFB46AEBECE454C /* Argon2Swift */,
 				A1B2C3D4E5F60002A1B2C3D4 /* OpenAPIRuntime */,
@@ -433,6 +430,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
+				EXCLUDED_SOURCE_FILE_NAMES = "*.md";
 				PRODUCT_BUNDLE_IDENTIFIER = middleseat.bmail;
 				PRODUCT_MODULE_NAME = bmail;
 				PRODUCT_NAME = "bmail - encrypted email";
@@ -468,6 +466,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
+				EXCLUDED_SOURCE_FILE_NAMES = "*.md";
 				PRODUCT_BUNDLE_IDENTIFIER = middleseat.bmail;
 				PRODUCT_MODULE_NAME = bmail;
 				PRODUCT_NAME = "bmail - encrypted email";
@@ -656,11 +655,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A1B2C3D4E5F60012A1B2C3D4 /* XCRemoteSwiftPackageReference "swift-openapi-urlsession" */;
 			productName = OpenAPIURLSession;
-		};
-		A1B2C3D4E5F60005A1B2C3D4 /* OpenAPIGenerator */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = A1B2C3D4E5F60010A1B2C3D4 /* XCRemoteSwiftPackageReference "swift-openapi-generator" */;
-			productName = OpenAPIGenerator;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

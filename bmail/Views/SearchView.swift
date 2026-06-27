@@ -11,6 +11,7 @@ struct SearchView: View {
     @State private var query = ""
     @State private var threads: [ThreadRow] = []
     @State private var subjects: [String: String] = [:]
+    @State private var snippets: [String: String] = [:]
     @State private var loading = true
     @State private var openThread: ThreadRow?
 
@@ -55,6 +56,7 @@ struct SearchView: View {
         guard !q.isEmpty else { return [] }
         return threads.filter { t in
             if let subj = subjects[t.id], subj.lowercased().contains(q) { return true }
+            if let snip = snippets[t.id], snip.lowercased().contains(q) { return true }
             if t.participants.contains(where: { $0.lowercased().contains(q) }) { return true }
             if let from = t.first_from_addr, from.lowercased().contains(q) { return true }
             if let hint = t.subject_hint, hint.lowercased().contains(q) { return true }
@@ -71,7 +73,7 @@ struct SearchView: View {
                     MailRow(
                         primary: senderLabel(for: t),
                         subject: subjects[t.id],
-                        snippet: nil,
+                        snippet: snippets[t.id],
                         timestamp: t.last_message_at,
                         unread: t.unread_count > 0,
                         attachments: false,
@@ -121,14 +123,18 @@ struct SearchView: View {
 
     private func decryptSubjects(_ rows: [ThreadRow]) async {
         guard let priv = app.priv else { return }
-        var out = subjects
-        for t in rows where out[t.id] == nil {
-            guard let s = t.first_subject_ct_b64, let blob = Data(b64u: s) else { continue }
-            if let plaintext = try? Crypto.openSealedString(blob, priv: priv) {
-                out[t.id] = plaintext
+        var subjectOut = subjects
+        var snippetOut = snippets
+        for t in rows {
+            if subjectOut[t.id] == nil, let subj = t.decryptedSubject(priv: priv) {
+                subjectOut[t.id] = subj
+            }
+            if snippetOut[t.id] == nil, let prev = t.decryptedPreview(priv: priv) {
+                snippetOut[t.id] = prev
             }
         }
-        subjects = out
+        subjects = subjectOut
+        snippets = snippetOut
     }
 
     private func senderLabel(for t: ThreadRow) -> String {

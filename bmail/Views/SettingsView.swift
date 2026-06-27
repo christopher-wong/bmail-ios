@@ -28,6 +28,7 @@ struct SettingsView: View {
                     passkeysSection
                     filesSection
                     labelsSection
+                    imagesSection
                     aboutSection
                     logoutSection
                 }
@@ -47,6 +48,7 @@ struct SettingsView: View {
         }
         .task {
             biometryLockOn = app.biometryLockEnabled
+            await app.loadImageSettingsIfNeeded()
             await loadPasskeys()
         }
         .confirmationDialog(
@@ -227,6 +229,45 @@ struct SettingsView: View {
             .buttonStyle(.plain)
         } header: {
             Text("Labels")
+        }
+    }
+
+    // MARK: - Remote images section
+
+    private var imagesSection: some View {
+        Section {
+            Toggle(isOn: Binding(
+                get: { app.imageLoadByDefault },
+                set: { newValue in
+                    DSHaptics.impactLight()
+                    Task { await app.setImagesLoadByDefault(newValue) }
+                }
+            )) {
+                DSRow(
+                    icon: "photo",
+                    title: "Load remote images",
+                    subtitle: "Automatically, for every sender"
+                ) { EmptyView() }
+            }
+            .tint(.accentColor)
+            .listRowInsets(EdgeInsets())
+
+            ForEach(app.imageDomains.sorted(), id: \.self) { domain in
+                DSRow(icon: "checkmark.shield.fill", title: domain) {
+                    Button("Remove") {
+                        DSHaptics.impactLight()
+                        Task { await app.removeImageDomain(domain) }
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+                    .controlSize(.small)
+                }
+                .listRowInsets(EdgeInsets())
+            }
+        } header: {
+            Text("Remote images")
+        } footer: {
+            Text("Blocked by default. Senders embed remote images — including invisible tracking pixels — to learn your IP address, approximate location, and the exact moment you open a message. When you load them, bmail fetches them through its own server, so the sender never sees your device or IP. Senders you allow load automatically.")
         }
     }
 

@@ -142,9 +142,20 @@ final class APIClient {
         return try await run(request("PATCH", path, body: data), as: T.self)
     }
 
+    func put<T: Decodable, B: Encodable>(_ path: String, _ body: B, as _: T.Type = T.self) async throws -> T {
+        let data = try encoder.encode(body)
+        return try await run(request("PUT", path, body: data), as: T.self)
+    }
+
     @discardableResult
     func delete(_ path: String) async throws -> Empty {
         try await run(request("DELETE", path), as: Empty.self)
+    }
+
+    /// DELETE that decodes a response body (some endpoints return the updated
+    /// resource rather than an empty 204).
+    func delete<T: Decodable>(_ path: String, as _: T.Type) async throws -> T {
+        try await run(request("DELETE", path), as: T.self)
     }
 
     @discardableResult
