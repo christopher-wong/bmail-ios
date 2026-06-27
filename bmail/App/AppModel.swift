@@ -26,6 +26,71 @@ final class AppModel {
     /// Unauthenticated, safe to refresh from `.unauthenticated`.
     var publicConfig: PublicConfig?
 
+    // MARK: - Remote-image settings
+
+    /// When true, remote images load automatically for every sender. When
+    /// false (default), they're blocked until the user opts in per-message or
+    /// allowlists the sender's domain. Either way they load through the proxy.
+    var imageLoadByDefault = false
+    /// Lowercased sender domains the user has allowed to load images.
+    var imageDomains: Set<String> = []
+    private var imageSettingsLoaded = false
+
+    func loadImageSettingsIfNeeded() async {
+        guard !imageSettingsLoaded else { return }
+        await reloadImageSettings()
+    }
+
+    func reloadImageSettings() async {
+        do { applyImageSettings(try await APIClient.shared.imageSettings()) }
+        catch { /* keep the privacy-preserving defaults on failure */ }
+    }
+
+    func setImagesLoadByDefault(_ on: Bool) async {
+        // Optimistic; reconcile with the server's authoritative response.
+        imageLoadByDefault = on
+        do { applyImageSettings(try await APIClient.shared.setImageLoadByDefault(on)) }
+        catch {
+            imageLoadByDefault = !on
+            lastError = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+        }
+    }
+
+    func allowImageDomain(_ domain: String) async {
+        let d = domain.lowercased()
+        guard !d.isEmpty else { return }
+        let prev = imageDomains
+        imageDomains.insert(d)
+        do { applyImageSettings(try await APIClient.shared.addImageDomain(d)) }
+        catch {
+            imageDomains = prev
+            lastError = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+        }
+    }
+
+    func removeImageDomain(_ domain: String) async {
+        let prev = imageDomains
+        imageDomains.remove(domain.lowercased())
+        do { applyImageSettings(try await APIClient.shared.removeImageDomain(domain)) }
+        catch {
+            imageDomains = prev
+            lastError = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+        }
+    }
+
+    /// Should remote images auto-load for a message from `senderDomain`?
+    func shouldAutoLoadImages(senderDomain: String) -> Bool {
+        if imageLoadByDefault { return true }
+        let d = senderDomain.lowercased()
+        return !d.isEmpty && imageDomains.contains(d)
+    }
+
+    private func applyImageSettings(_ s: ImageSettings) {
+        imageLoadByDefault = s.load_by_default
+        imageDomains = Set(s.domains.map { $0.lowercased() })
+        imageSettingsLoaded = true
+    }
+
     private let auth: AuthService
 
     init() {
@@ -230,6 +295,9 @@ final class AppModel {
         await auth.logout()
         self.priv = nil
         self.me = nil
+        self.imageLoadByDefault = false
+        self.imageDomains = []
+        self.imageSettingsLoaded = false
         self.phase = .unauthenticated
     }
 }

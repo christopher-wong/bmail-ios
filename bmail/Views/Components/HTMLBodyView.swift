@@ -178,3 +178,53 @@ private struct SandboxedHTMLWebView: UIViewRepresentable {
         }
     }
 }
+
+// MARK: - HTML text helpers
+
+extension String {
+    /// Heuristic: does this string contain HTML markup worth rendering as a web
+    /// document rather than as plain text? Used to catch messages whose HTML
+    /// landed in the plain-text body field.
+    var looksLikeHTML: Bool {
+        range(
+            of: "<(/?)(html|body|div|p|br|table|span|a|img|ul|ol|li|h[1-6]|blockquote|strong|em|b|i|font|head|style)\\b[^>]*>",
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
+    }
+
+    /// A plain-text rendering of HTML suitable for previews/snippets: drops
+    /// style/script/head/comment blocks, turns block boundaries into spaces,
+    /// strips remaining tags, and decodes a handful of common entities.
+    var strippingHTML: String {
+        var s = self
+        let removals = [
+            "(?is)<!--.*?-->",
+            "(?is)<style\\b[^>]*>.*?</style>",
+            "(?is)<script\\b[^>]*>.*?</script>",
+            "(?is)<head\\b[^>]*>.*?</head>"
+        ]
+        for pattern in removals {
+            s = s.replacingOccurrences(of: pattern, with: " ", options: .regularExpression)
+        }
+        // Block-closers / line breaks → spaces so words don't run together.
+        s = s.replacingOccurrences(
+            of: "(?i)<(br|/p|/div|/tr|/li|/h[1-6])\\b[^>]*>",
+            with: " ",
+            options: .regularExpression
+        )
+        // Strip all remaining tags.
+        s = s.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+        // Decode the entities that actually show up in mail previews.
+        let entities: [String: String] = [
+            "&nbsp;": " ", "&amp;": "&", "&lt;": "<", "&gt;": ">",
+            "&quot;": "\"", "&#39;": "'", "&apos;": "'", "&mdash;": "—",
+            "&ndash;": "–", "&hellip;": "…", "&zwnj;": "", "&#8203;": ""
+        ]
+        for (key, value) in entities {
+            s = s.replacingOccurrences(of: key, with: value, options: .caseInsensitive)
+        }
+        // Collapse whitespace runs (incl. newlines) into single spaces.
+        s = s.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}

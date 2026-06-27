@@ -4,6 +4,7 @@ struct SentView: View {
     @Environment(AppModel.self) private var app
     @State private var threads: [ThreadRow] = []
     @State private var subjects: [String: String] = [:]
+    @State private var snippets: [String: String] = [:]
     @State private var loading = true
     @State private var openThread: ThreadRow?
 
@@ -47,7 +48,7 @@ struct SentView: View {
                     MailRow(
                         primary: recipientLabel(for: t),
                         subject: subjects[t.id],
-                        snippet: nil,
+                        snippet: snippets[t.id],
                         timestamp: t.last_message_at,
                         unread: t.unread_count > 0,
                         attachments: false,
@@ -104,13 +105,13 @@ struct SentView: View {
 
     private func decryptSubjects(_ rows: [ThreadRow]) async {
         guard let priv = app.priv else { return }
-        var out: [String: String] = [:]
+        var subjectOut: [String: String] = [:]
+        var snippetOut: [String: String] = [:]
         for t in rows {
-            guard let s = t.first_subject_ct_b64, let blob = Data(b64u: s) else { continue }
-            if let plaintext = try? Crypto.openSealedString(blob, priv: priv) {
-                out[t.id] = plaintext
-            }
+            if let subj = t.decryptedSubject(priv: priv) { subjectOut[t.id] = subj }
+            if let prev = t.decryptedPreview(priv: priv) { snippetOut[t.id] = prev }
         }
-        subjects = out
+        subjects = subjectOut
+        snippets = snippetOut
     }
 }

@@ -16,6 +16,14 @@ struct StatusResp: Decodable {
 
 // MARK: - Me
 
+/// Per-user remote-image preferences, mirrored from the server.
+struct ImageSettings: Codable, Sendable {
+    var load_by_default: Bool
+    var domains: [String]
+
+    static let blocked = ImageSettings(load_by_default: false, domains: [])
+}
+
 struct MeResp: Codable, Sendable {
     let id: String
     let handle: String
@@ -33,6 +41,7 @@ struct ThreadRow: Codable, Identifiable, Hashable, Sendable {
     let id: String
     let subject_hint: String?
     let first_subject_ct_b64: String?
+    let snippet_ct_b64: String?
     let first_from_addr: String?
     let first_direction: Direction?
     let participants: [String]
@@ -41,6 +50,23 @@ struct ThreadRow: Codable, Identifiable, Hashable, Sendable {
     let unread_count: Int
     let has_starred: Bool
     let archived: Bool
+}
+
+extension ThreadRow {
+    /// Decrypt the first message's subject for a list row.
+    func decryptedSubject(priv: Data) -> String? {
+        guard let s = first_subject_ct_b64, let blob = Data(b64u: s) else { return nil }
+        return try? Crypto.openSealedString(blob, priv: priv)
+    }
+
+    /// Decrypt the body snippet and reduce it to a plain-text preview (nil if
+    /// absent or empty after HTML stripping).
+    func decryptedPreview(priv: Data) -> String? {
+        guard let s = snippet_ct_b64, let blob = Data(b64u: s),
+              let plain = try? Crypto.openSealedString(blob, priv: priv) else { return nil }
+        let preview = plain.strippingHTML
+        return preview.isEmpty ? nil : preview
+    }
 }
 
 struct MessageRow: Decodable, Identifiable, Sendable {
