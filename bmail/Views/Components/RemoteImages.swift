@@ -32,11 +32,21 @@ enum RemoteImages {
     /// Rewrite every `<img>`: replace a remote `src` with `replacement(url)`
     /// (a `data:` URI or the blank pixel) and strip `srcset` so it can't slip
     /// a remote load past the rewrite.
+    ///
+    /// Images the sandboxed renderer can't load at all — `cid:` inline parts,
+    /// relative paths, anything that isn't `data:` — are swapped for the blank
+    /// pixel too. The CSP (`img-src data:`) would block them and leave a
+    /// broken-image box; blanking them renders clean empty space instead.
     static func rewrite(_ html: String, replacement: (String) -> String) -> String {
         replaceMatches(in: html, pattern: imgTagPattern) { tag in
             var t = tag
-            if let src = attrValue(tag, "src"), let norm = normalizedRemoteURL(src) {
-                t = setAttr(t, "src", replacement(norm))
+            if let src = attrValue(tag, "src") {
+                if let norm = normalizedRemoteURL(src) {
+                    t = setAttr(t, "src", replacement(norm))
+                } else if !src.trimmingCharacters(in: .whitespacesAndNewlines)
+                            .lowercased().hasPrefix("data:") {
+                    t = setAttr(t, "src", blankPixel)
+                }
             }
             if attrValue(tag, "srcset") != nil {
                 t = removeAttr(t, "srcset")

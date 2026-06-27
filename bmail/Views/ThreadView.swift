@@ -17,6 +17,8 @@ struct ThreadView: View {
     @State private var lastExpandedAnchor: String?
     @State private var shareURL: URL?
     @State private var unsubscribe: (() -> Void)?
+    /// Guards the one-time scroll-to-latest when a thread first opens.
+    @State private var didInitialScroll = false
 
     struct DecryptedMessage {
         var subject: String?
@@ -75,11 +77,15 @@ struct ThreadView: View {
         .navigationTitle(navigationTitle)
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(false)
-        .toolbar { trailingMenu; bottomBar }
-        .toolbarBackground(.thinMaterial, for: .bottomBar)
-        // Hide the parent TabView's tab bar while reading a thread so the
-        // bottom toolbar (Archive / Move / Trash / Reply) isn't drawn under it.
+        .toolbar { trailingMenu }
+        // Hide the parent TabView's tab bar while reading a thread so our
+        // bottom control bar isn't drawn under it.
         .toolbar(.hidden, for: .tabBar)
+        .safeAreaInset(edge: .bottom) {
+            if !loading && loadError == nil {
+                bottomControlBar
+            }
+        }
         .task {
             await app.loadImageSettingsIfNeeded()
             await load()
@@ -106,75 +112,89 @@ struct ThreadView: View {
     // MARK: - Message scroll view
 
     private var messageScrollView: some View {
-        ScrollView {
-            LazyVStack(spacing: DS.Space.m) {
-                ForEach(messages) { m in
-                    MessageCard(
-                        message: m,
-                        decrypted: decrypted[m.id],
-                        attachments: attachmentsByMessage[m.id] ?? [],
-                        isExpanded: expandedIDs.contains(m.id),
-                        canReplyAll: canReplyAll(m),
-                        onToggleExpand: { toggleExpand(m) },
-                        onReply: { startReply(to: m, all: false) },
-                        onReplyAll: { startReply(to: m, all: true) },
-                        onDownload: { att in await downloadAndShare(att, on: m) }
-                    )
-                    .contextMenu {
-                        Button {
-                            startReply(to: m, all: false)
-                        } label: {
-                            Label("Reply", systemImage: "arrowshape.turn.up.left")
-                        }
-
-                        if canReplyAll(m) {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: DS.Space.m) {
+                    ForEach(messages) { m in
+                        MessageCard(
+                            message: m,
+                            decrypted: decrypted[m.id],
+                            attachments: attachmentsByMessage[m.id] ?? [],
+                            isExpanded: expandedIDs.contains(m.id),
+                            canReplyAll: canReplyAll(m),
+                            onToggleExpand: { toggleExpand(m) },
+                            onReply: { startReply(to: m, all: false) },
+                            onReplyAll: { startReply(to: m, all: true) },
+                            onDownload: { att in await downloadAndShare(att, on: m) }
+                        )
+                        .contextMenu {
                             Button {
-                                startReply(to: m, all: true)
+                                startReply(to: m, all: false)
                             } label: {
-                                Label("Reply all", systemImage: "arrowshape.turn.up.left.2")
+                                Label("Reply", systemImage: "arrowshape.turn.up.left")
                             }
-                        }
 
-                        Button {
-                            startForward(m)
-                        } label: {
-                            Label("Forward", systemImage: "arrowshape.turn.up.right")
-                        }
+                            if canReplyAll(m) {
+                                Button {
+                                    startReply(to: m, all: true)
+                                } label: {
+                                    Label("Reply all", systemImage: "arrowshape.turn.up.left.2")
+                                }
+                            }
 
-                        Divider()
+                            Button {
+                                startForward(m)
+                            } label: {
+                                Label("Forward", systemImage: "arrowshape.turn.up.right")
+                            }
 
-                        Button {
-                            Task { await toggleStarred(m) }
-                        } label: {
-                            Label(
-                                m.starred ? "Unstar" : "Star",
-                                systemImage: m.starred ? "star.slash" : "star"
-                            )
-                        }
+                            Divider()
 
-                        Button {
-                            Task { await toggleRead(m) }
-                        } label: {
-                            Label(
-                                m.read ? "Mark as unread" : "Mark as read",
-                                systemImage: m.read ? "envelope.badge" : "envelope.open"
-                            )
-                        }
+                            Button {
+                                Task { await toggleStarred(m) }
+                            } label: {
+                                Label(
+                                    m.starred ? "Unstar" : "Star",
+                                    systemImage: m.starred ? "star.slash" : "star"
+                                )
+                            }
 
-                        Divider()
+                            Button {
+                                Task { await toggleRead(m) }
+                            } label: {
+                                Label(
+                                    m.read ? "Mark as unread" : "Mark as read",
+                                    systemImage: m.read ? "envelope.badge" : "envelope.open"
+                                )
+                            }
 
-                        Button(role: .destructive) {
-                            Task { await deleteMessage(m) }
-                        } label: {
-                            Label("Delete message", systemImage: "trash")
+                            Divider()
+
+                            Button(role: .destructive) {
+                                Task { await deleteMessage(m) }
+                            } label: {
+                                Label("Delete message", systemImage: "trash")
+                            }
                         }
                     }
                 }
+                .padding(.horizontal, DS.Space.l)
+                .padding(.vertical, DS.Space.m)
             }
-            .padding(.horizontal, DS.Space.l)
-            .padding(.vertical, DS.Space.m)
-            // Extra bottom padding so last card clears the bottom toolbar.
-            .padding(.bottom, 60)
+            // Open on the latest message so it fills the screen rather than the
+            // re-quoted history above it.
+            .onAppear { scrollToLatest(proxy) }
+        }
+    }
+
+    /// Scroll so the newest message sits at the top of the viewport. Runs once
+    /// per thread open; the collapsed history above keeps a stable height, so a
+    /// single deferred scroll lands correctly.
+    private func scrollToLatest(_ proxy: ScrollViewProxy) {
+        guard !didInitialScroll, let last = messages.last else { return }
+        didInitialScroll = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            proxy.scrollTo(last.id, anchor: .top)
         }
     }
 
@@ -211,27 +231,27 @@ struct ThreadView: View {
         }
     }
 
-    @ToolbarContentBuilder
-    private var bottomBar: some ToolbarContent {
-        ToolbarItemGroup(placement: .bottomBar) {
-            Button("Archive", systemImage: "archivebox") {
+    /// A single unified control bar pinned to the bottom, instead of four
+    /// separate floating glass circles drawn over the message content.
+    private var bottomControlBar: some View {
+        HStack(spacing: DS.Space.m) {
+            controlButton("Archive", systemImage: "archivebox") {
                 // Archive action — wired to API when endpoint lands.
             }
 
-            Spacer()
+            Spacer(minLength: 0)
 
-            Button("Move", systemImage: "folder") {
+            controlButton("Move", systemImage: "folder") {
                 // Move action placeholder.
             }
 
-            Spacer()
+            Spacer(minLength: 0)
 
-            Button("Trash", systemImage: "trash") {
+            controlButton("Trash", systemImage: "trash", tint: .red) {
                 Task { await deleteThread() }
             }
-            .tint(.red)
 
-            Spacer()
+            Spacer(minLength: 0)
 
             if let last = messages.last {
                 Menu {
@@ -253,13 +273,40 @@ struct ThreadView: View {
                         Label("Forward", systemImage: "arrowshape.turn.up.right")
                     }
                 } label: {
-                    Label("Reply", systemImage: "arrowshape.turn.up.left.fill")
+                    Image(systemName: "arrowshape.turn.up.left.fill")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .background(Color.accentColor, in: Circle())
                 } primaryAction: {
                     startReply(to: last, all: false)
                 }
-                .buttonStyle(.borderedProminent)
+                .accessibilityLabel("Reply")
             }
         }
+        .padding(.horizontal, DS.Space.l)
+        .padding(.vertical, DS.Space.s)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().stroke(Color(.separator), lineWidth: 0.5))
+        .padding(.horizontal, DS.Space.l)
+        .padding(.bottom, DS.Space.xs)
+    }
+
+    private func controlButton(
+        _ title: String,
+        systemImage: String,
+        tint: Color = .accentColor,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.body)
+                .foregroundStyle(tint)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
     }
 
     // MARK: - Actions
@@ -602,19 +649,19 @@ private struct MessageCard: View {
                         .lineLimit(1)
 
                     if !message.to_addrs.isEmpty {
-                        Text("To \(message.to_addrs.joined(separator: ", "))")
+                        Text(recipientLine("To", message.to_addrs))
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
-                            .truncationMode(.middle)
+                            .truncationMode(.tail)
                     }
 
                     if !message.cc_addrs.isEmpty {
-                        Text("Cc \(message.cc_addrs.joined(separator: ", "))")
+                        Text(recipientLine("Cc", message.cc_addrs))
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
-                            .truncationMode(.middle)
+                            .truncationMode(.tail)
                     }
                 }
 
@@ -782,5 +829,32 @@ private struct MessageCard: View {
         }
         let localPart = name.split(separator: "@").first.map(String.init) ?? name
         return String(localPart.prefix(2)).uppercased()
+    }
+
+    /// A short one-line summary of recipients: up to two names, then "+N",
+    /// so multiple addresses don't get truncated mid-string.
+    private func recipientLine(_ prefix: String, _ addrs: [String]) -> String {
+        let names = addrs.map(displayName)
+        switch names.count {
+        case 0: return prefix
+        case 1: return "\(prefix) \(names[0])"
+        case 2: return "\(prefix) \(names[0]), \(names[1])"
+        default: return "\(prefix) \(names[0]), \(names[1]) +\(names.count - 2)"
+        }
+    }
+
+    /// A display label for a recipient: the name from a `Name <email>` form,
+    /// otherwise the bare email address.
+    private func displayName(_ raw: String) -> String {
+        let t = raw.trimmingCharacters(in: .whitespaces)
+        if let lt = t.firstIndex(of: "<") {
+            let name = t[t.startIndex..<lt]
+                .trimmingCharacters(in: CharacterSet(charactersIn: " \""))
+            if !name.isEmpty { return name }
+            if let gt = t.firstIndex(of: ">"), t.index(after: lt) < gt {
+                return String(t[t.index(after: lt)..<gt])
+            }
+        }
+        return t
     }
 }
