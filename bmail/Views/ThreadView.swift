@@ -433,9 +433,35 @@ struct ThreadView: View {
             loading = false
             await decrypt(ms)
             await loadAttachments(ms)
+            await markUnreadAsRead()
         } catch {
             loadError = (error as? LocalizedError)?.errorDescription ?? "Load failed"
             loading = false
+        }
+    }
+
+    /// Mark every inbound, unread message in this thread as read.
+    ///
+    /// Standard email-app behaviour: opening a thread implies you've read it.
+    /// Updates the local state first so the bold "unread" sender styling
+    /// disappears instantly, then fires the PATCH calls in parallel. Errors
+    /// are best-effort silenced — a transient network blip shouldn't make the
+    /// thread regress to "unread" in the UI, and the next inbox refresh from
+    /// the server will reconcile any divergence.
+    private func markUnreadAsRead() async {
+        let targets = messages.enumerated().compactMap { idx, m -> (Int, String)? in
+            (m.direction == .in && !m.read) ? (idx, m.id) : nil
+        }
+        guard !targets.isEmpty else { return }
+
+        for (idx, _) in targets { messages[idx].read = true }
+
+        await withTaskGroup(of: Void.self) { group in
+            for (_, msgID) in targets {
+                group.addTask {
+                    _ = try? await APIClient.shared.patchMessage(id: msgID, read: true)
+                }
+            }
         }
     }
 

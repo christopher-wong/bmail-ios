@@ -82,7 +82,7 @@ struct MessageRow: Decodable, Identifiable, Sendable {
     let sent_at: Int64
     let received_at: Int64
     let direction: Direction
-    let read: Bool
+    var read: Bool
     let starred: Bool
     let snippet_ct_b64: String?
     let subject_ct_b64: String

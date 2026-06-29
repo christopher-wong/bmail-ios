@@ -175,6 +175,10 @@ struct InboxView: View {
             switch ev {
             case .messageNew(let dir, _, _): shouldReload = (dir == .in)
             case .messageDelete, .threadDelete: shouldReload = true
+            // ThreadView marks messages read on open; the inbox dot is driven
+            // by thread.unread_count, so refresh when the server emits .read
+            // so the dot disappears as soon as the PATCH lands.
+            case .messageRead: shouldReload = true
             default: shouldReload = false
             }
             if shouldReload { Task { await load() } }
