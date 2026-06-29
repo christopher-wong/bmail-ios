@@ -418,8 +418,17 @@ struct ThreadView: View {
     // MARK: - Data
 
     private func load() async {
-        loading = true
-        loadError = nil
+        // Only flip the loading state when there's nothing on screen yet.
+        // Background reloads (realtime, refreshable) keep the existing content
+        // visible — otherwise the `loading ? ProgressView : messageScrollView`
+        // branch tears down the ScrollView, the scroll position is lost, and
+        // since the one-shot scrollToLatest is guarded by didInitialScroll the
+        // user lands at the top (oldest message) instead of the bottom.
+        // That same teardown is what made opens visibly flash after our own
+        // mark-as-read PATCH fired a realtime .messageRead reload.
+        let hadData = !messages.isEmpty
+        if !hadData { loading = true }
+        if !hadData { loadError = nil }
         do {
             let ms: [MessageRow] = try await APIClient.shared.get("/api/threads/\(threadID)")
             messages = ms
@@ -435,7 +444,12 @@ struct ThreadView: View {
             await loadAttachments(ms)
             await markUnreadAsRead()
         } catch {
-            loadError = (error as? LocalizedError)?.errorDescription ?? "Load failed"
+            // Don't blow away the data the user is reading just because a
+            // background refresh failed; only surface the error when the
+            // screen would otherwise be blank.
+            if !hadData {
+                loadError = (error as? LocalizedError)?.errorDescription ?? "Load failed"
+            }
             loading = false
         }
     }
